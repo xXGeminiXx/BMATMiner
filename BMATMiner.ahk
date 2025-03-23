@@ -31,6 +31,8 @@ if !A_IsAdmin {
 global BB_VERSION := "1.5.0"
 global BB_running := false
 global BB_paused := false
+global BB_lastGameStateReset := 0
+global BB_GAME_STATE_COOLDOWN := 30000  ; 30 seconds cooldown
 global gameStateEnsured := false
 global BB_automationState := "Idle"
 global BB_stateHistory := []
@@ -943,85 +945,6 @@ BB_checkForUpdates() {
     BB_updateStatusAndLog("Failed to check for updates after " . maxRetries . " attempts", true, true)
 }
 
-; ===================== MINING AUTOMATION FUNCTIONS =====================
-; Checks if automining is currently active in the game.
-; Parameters:
-;   hwnd: The handle of the Roblox window to check.
-; Returns: True if automining is on, False if it's off.
-BB_checkAutofarming(hwnd) {
-    global BB_isAutofarming, BB_updateStatusAndLog, gameStateEnsured
-    
-    ; Log the start of the automining check
-    BB_updateStatusAndLog("Checking automining state (hwnd: " . hwnd . ")...")
-    
-    ; Ensure the game UI is in a state where the button is visible, but only once per cycle
-    if (!gameStateEnsured) {
-        BB_ensureGameState(hwnd)
-        gameStateEnsured := true
-    }
-    
-    ; Variables to store the coordinates of the detected button
-    FoundX := ""
-    FoundY := ""
-    
-    ; First, try to detect the "autofarm_off.png" button, which indicates automining is off
-    if (BB_smartTemplateMatch("autofarm_off", &FoundX, &FoundY, hwnd)) {
-        BB_updateStatusAndLog("Detected 'autofarm_off' button at x=" . FoundX . ", y=" . FoundY . ", automining is OFF")
-        BB_isAutofarming := false
-        return false
-    }
-    
-    ; If "autofarm_off.png" is not found, check for "autofarm_on.png" to confirm automining is on
-    if (BB_smartTemplateMatch("autofarm_on", &FoundX, &FoundY, hwnd)) {
-        BB_updateStatusAndLog("Detected 'autofarm_on' button at x=" . FoundX . ", y=" . FoundY . ", automining is ON")
-        BB_isAutofarming := true
-        return true
-    }
-    
-    ; Fallback: Use pixel movement detection to infer automining state
-    BB_updateStatusAndLog("Neither 'autofarm_off' nor 'autofarm_on' button found, analyzing pixel movement")
-    
-    ; Define regions to check for pixel movement (indicating mining activity)
-    scaleX := A_ScreenWidth / 1920
-    scaleY := A_ScreenHeight / 1080
-    regions := [
-        [Round(A_ScreenWidth//2), Round(A_ScreenHeight//2)],     ; Center
-        [Round(A_ScreenWidth//4), Round(A_ScreenHeight//4)],     ; Top-left
-        [Round(3*A_ScreenWidth//4), Round(3*A_ScreenHeight//4)]  ; Bottom-right
-    ]
-    
-    ; Capture initial colors in each region
-    initialColors := []
-    for region in regions {
-        color := PixelGetColor(region[1], region[2], "RGB")
-        initialColors.Push(color)
-        BB_updateStatusAndLog("Pixel movement check at [" . region[1] . "," . region[2] . "]: initial color " . color)
-    }
-    
-    ; Wait 1 second and check for changes
-    Sleep(1000)
-    changes := 0
-    threshold := 1  ; Simplified threshold
-    for index, region in regions {
-        newColor := PixelGetColor(region[1], region[2], "RGB")
-        if (newColor != initialColors[index]) {
-            changes++
-            BB_updateStatusAndLog("Pixel change detected at [" . region[1] . "," . region[2] . "]: " . initialColors[index] . " -> " . newColor)
-        }
-    }
-    
-    ; Determine automining state based on pixel movement
-    if (changes > threshold) {
-        BB_updateStatusAndLog("Significant pixel movement detected (" . changes . " changes), automining is ON")
-        BB_isAutofarming := true
-        return true
-    } else {
-        BB_updateStatusAndLog("No significant pixel movement (" . changes . " changes), automining is OFF")
-        BB_isAutofarming := false
-        return false
-    }
-}
-
 ; Enables automining in the game.
 ; Parameters:
 ;   hwnd: The handle of the Roblox window to interact with.
@@ -1166,16 +1089,6 @@ BB_detectEmeraldBlocks(&blockPositions, hwnd) {
     }
     
     return blockPositions.Length > 0
-}
-
-BB_isColorSimilar(color1, color2, tolerance) {
-    r1 := (color1 >> 16) & 0xFF
-    g1 := (color1 >> 8) & 0xFF
-    b1 := color1 & 0xFF
-    r2 := (color2 >> 16) & 0xFF
-    g2 := (color2 >> 8) & 0xFF
-    b2 := color2 & 0xFF
-    return (Abs(r1 - r2) <= tolerance && Abs(g1 - g2) <= tolerance && Abs(b1 - b2) <= tolerance)
 }
 
 ; Opens the teleport menu in the game.
@@ -1506,16 +1419,19 @@ BB_tntBundleLoop() {
 ; State machine automation loop for mining
 BB_miningAutomationLoop() {
     global BB_running, BB_paused, BB_automationState, BB_FAILED_INTERACTION_COUNT, BB_MAX_FAILED_INTERACTIONS
-    global BB_currentArea, BB_merchantState, BB_isAutofarming, BB_CYCLE_INTERVAL, BB_ENABLE_EXPLOSIVES
+    global BB_currentArea, BB_merchantState, BB_isAutofarming, BB_CYCLE_INTERVAL, BB_ENABLE_EXPLOSIVES, gameStateEnsured
     
     static automineDetectionAttempts := 0
     static MAX_AUTOMINE_DETECTION_ATTEMPTS := 5
-    static gameStateEnsured := false
     
     if (!BB_running || BB_paused) {
         BB_updateStatusAndLog("Automation loop skipped (not running or paused)")
         return
     }
+    
+    ; Reset gameStateEnsured at the start of each cycle
+    gameStateEnsured := false
+    BB_updateStatusAndLog("Starting automation cycle, gameStateEnsured reset")
     
     windows := BB_updateActiveWindows()
     if (windows.Length == 0) {
@@ -1523,7 +1439,6 @@ BB_miningAutomationLoop() {
         return
     }
     
-    BB_updateStatusAndLog("Starting automation cycle")
     for hwnd in windows {
         if (!BB_running || BB_paused) {
             BB_updateStatusAndLog("Automation loop interrupted")
@@ -1547,7 +1462,6 @@ BB_miningAutomationLoop() {
                 if BB_checkAutofarming(hwnd) {
                     BB_setState("DisableAutomine")
                     automineDetectionAttempts := 0
-                    gameStateEnsured := false
                 } else {
                     automineDetectionAttempts++
                     BB_updateStatusAndLog("Autofarming not detected in Area 5 (attempt " . automineDetectionAttempts . "/" . MAX_AUTOMINE_DETECTION_ATTEMPTS . ")")
@@ -1557,12 +1471,11 @@ BB_miningAutomationLoop() {
                         return
                     }
                     BB_updateStatusAndLog("Autofarming not detected, will retry in next cycle")
-                    gameStateEnsured := false
+                    Sleep(5000)  ; Add a delay to prevent spamming the check
                 }
             case "DisableAutomine":
                 if BB_disableAutomine(hwnd) {
                     BB_setState("TeleportToArea4")
-                    gameStateEnsured := false
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
@@ -1570,7 +1483,6 @@ BB_miningAutomationLoop() {
             case "TeleportToArea4":
                 if BB_openTeleportMenu(hwnd) && BB_teleportToArea("area_4_button", hwnd) {
                     BB_setState("Shopping")
-                    gameStateEnsured := false
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
@@ -1582,7 +1494,6 @@ BB_miningAutomationLoop() {
                     SendInput("{f up}")
                     Sleep(500)
                     BB_setState("TeleportToArea5")
-                    gameStateEnsured := false
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
@@ -1590,7 +1501,6 @@ BB_miningAutomationLoop() {
             case "TeleportToArea5":
                 if BB_openTeleportMenu(hwnd) && BB_teleportToArea("area_5_button", hwnd) {
                     BB_setState("EnableAutomine")
-                    gameStateEnsured := false
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
@@ -1598,7 +1508,6 @@ BB_miningAutomationLoop() {
             case "EnableAutomine":
                 if BB_enableAutomine(hwnd) {
                     BB_setState("Mining")
-                    gameStateEnsured := false
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
@@ -1635,20 +1544,17 @@ BB_miningAutomationLoop() {
                     Sleep(5000)
                 }
                 BB_setState("Idle")
-                gameStateEnsured := false
             case "Error":
                 if (BB_FAILED_INTERACTION_COUNT >= BB_MAX_FAILED_INTERACTIONS) {
                     BB_updateStatusAndLog("Too many failed interactions, attempting reset", true, true)
                     if BB_resetGameState() {
                         BB_setState("Idle")
-                        gameStateEnsured := false
                     } else {
                         BB_stopAutomation()
                     }
                 } else {
                     BB_updateStatusAndLog("Recovering from error state, retrying")
                     BB_setState("Idle")
-                    gameStateEnsured := false
                 }
         }
     }
@@ -1685,7 +1591,90 @@ BB_exitApp(*) {
     ExitApp()
 }
 
-; Performs a robust template match to find an image on the screen, with enhanced logic for the automine button.
+; Checks if automining is currently active in the game.
+; Parameters:
+;   hwnd: The handle of the Roblox window to check.
+; Returns: True if automining is on, False if it's off.
+BB_checkAutofarming(hwnd) {
+    global BB_isAutofarming, BB_updateStatusAndLog, gameStateEnsured, BB_lastGameStateReset, BB_GAME_STATE_COOLDOWN
+    
+    ; Log the start of the automining check
+    BB_updateStatusAndLog("Checking automining state (hwnd: " . hwnd . ")...")
+    
+    ; Ensure the game UI is in a state where the button is visible, but only if cooldown has passed
+    currentTime := A_TickCount
+    if (!gameStateEnsured && (currentTime - BB_lastGameStateReset >= BB_GAME_STATE_COOLDOWN)) {
+        BB_ensureGameState(hwnd)
+        gameStateEnsured := true
+        BB_lastGameStateReset := currentTime
+        BB_updateStatusAndLog("Game state ensured with cooldown, last reset at " . BB_lastGameStateReset)
+    } else if (currentTime - BB_lastGameStateReset < BB_GAME_STATE_COOLDOWN) {
+        BB_updateStatusAndLog("Skipping game state reset, cooldown active (" . (BB_GAME_STATE_COOLDOWN - (currentTime - BB_lastGameStateReset)) . "ms remaining)")
+    }
+    
+    ; Variables to store the coordinates of the detected button
+    FoundX := ""
+    FoundY := ""
+    
+    ; First, try to detect the "autofarm_off.png" button, which indicates automining is off
+    if (BB_smartTemplateMatch("autofarm_off", &FoundX, &FoundY, hwnd)) {
+        BB_updateStatusAndLog("Detected 'autofarm_off' button at x=" . FoundX . ", y=" . FoundY . ", automining is OFF")
+        BB_isAutofarming := false
+        return false
+    }
+    
+    ; If "autofarm_off.png" is not found, check for "autofarm_on.png" to confirm automining is on
+    if (BB_smartTemplateMatch("autofarm_on", &FoundX, &FoundY, hwnd)) {
+        BB_updateStatusAndLog("Detected 'autofarm_on' button at x=" . FoundX . ", y=" . FoundY . ", automining is ON")
+        BB_isAutofarming := true
+        return true
+    }
+    
+    ; Fallback: Use pixel movement detection to infer automining state
+    BB_updateStatusAndLog("Neither 'autofarm_off' nor 'autofarm_on' button found, analyzing pixel movement")
+    
+    ; Define regions to check for pixel movement (indicating mining activity)
+    scaleX := A_ScreenWidth / 1920
+    scaleY := A_ScreenHeight / 1080
+    regions := [
+        [Round(A_ScreenWidth//2), Round(A_ScreenHeight//2)],     ; Center
+        [Round(A_ScreenWidth//4), Round(A_ScreenHeight//4)],     ; Top-left
+        [Round(3*A_ScreenWidth//4), Round(3*A_ScreenHeight//4)]  ; Bottom-right
+    ]
+    
+    ; Capture initial colors in each region
+    initialColors := []
+    for region in regions {
+        color := PixelGetColor(region[1], region[2], "RGB")
+        initialColors.Push(color)
+        BB_updateStatusAndLog("Pixel movement check at [" . region[1] . "," . region[2] . "]: initial color " . color)
+    }
+    
+    ; Wait 1 second and check for changes
+    Sleep(1000)
+    changes := 0
+    threshold := 1  ; Simplified threshold
+    for index, region in regions {
+        newColor := PixelGetColor(region[1], region[2], "RGB")
+        if (newColor != initialColors[index]) {
+            changes++
+            BB_updateStatusAndLog("Pixel change detected at [" . region[1] . "," . region[2] . "]: " . initialColors[index] . " -> " . newColor)
+        }
+    }
+    
+    ; Determine automining state based on pixel movement
+    if (changes > threshold) {
+        BB_updateStatusAndLog("Significant pixel movement detected (" . changes . " changes), automining is ON")
+        BB_isAutofarming := true
+        return true
+    } else {
+        BB_updateStatusAndLog("No significant pixel movement (" . changes . " changes), automining is OFF")
+        BB_isAutofarming := false
+        return false
+    }
+}
+
+; Performs a robust template match to find an image on the screen, with greatly enhanced logic for autofarm detection.
 ; Parameters:
 ;   templateName: The name of the template (e.g., "automine_button", "autofarm_off").
 ;   FoundX, FoundY: Output variables for the coordinates where the template is found.
@@ -1721,13 +1710,13 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, hwnd, searchArea := "") {
     cacheKey := templateName . (searchArea ? (searchArea[1] . "," . searchArea[2] . "," . searchArea[3] . "," . searchArea[4]) : "") . hwnd
     if (BB_imageCache.Has(cacheKey)) {
         cachedResult := BB_imageCache[cacheKey]
-        if (cachedResult.success) {
+        if (cachedResult.success && A_TickCount - cachedResult.timestamp < 2000) { ; Cache valid for 2 seconds
             FoundX := cachedResult.x
             FoundY := cachedResult.y
             BB_updateStatusAndLog("Template '" . templateName . "' found in cache at x=" . FoundX . ", y=" . FoundY)
             return true
         }
-        return false
+        ; Cache expired or unsuccessful, will search again
     }
     
     ; Verify the window handle
@@ -1740,90 +1729,166 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, hwnd, searchArea := "") {
     WinGetPos(&winX, &winY, &winW, &winH, "ahk_id " . hwnd)
     BB_updateStatusAndLog("Roblox window position: x=" . winX . ", y=" . winY . ", width=" . winW . ", height=" . winH)
     
-    ; Define search areas for the automine button, relative to the window
+    ; For automine/autofarm buttons, use a comprehensive multi-zone, multi-method approach
     if (templateName = "automine_button" || templateName = "autofarm_off" || templateName = "autofarm_on") {
+        ; Define MULTIPLE search areas covering various possible button locations
         searchAreas := [
-            ; Bottom-left corner of the window
+            ; Mid-left (primary location you mentioned)
+            [winX, winY + (winH // 3), winX + (winW // 4), winY + (winH * 2 // 3)],
+            
+            ; Bottom-left (original search area)
             [winX, winY + winH - 400, winX + 500, winY + winH],
-            ; Entire left side of the window
-            [winX, winY, winX + 800, winY + winH],
-            ; Bottom half of the window
-            [winX, winY + (winH / 2), winX + winW, winY + winH],
-            ; Entire window
+            
+            ; Left side (entire left strip)
+            [winX, winY, winX + (winW // 5), winY + winH],
+            
+            ; Mid-screen (fallback)
+            [winX + (winW // 4), winY + (winH // 4), winX + (winW * 3 // 4), winY + (winH * 3 // 4)],
+            
+            ; Full screen (last resort)
             [winX, winY, winX + winW, winY + winH]
         ]
         
-        ; Define variations for image matching to handle different lighting and UI states
+        ; Define more variations for image matching with different tolerances
         variations := [
-            "*0", "*10", "*20", "*30", "*40", "*50", "*75", "*100",  ; Even more lenient confidence levels
-            "*TransBlack", "*TransWhite",                            ; Handle transparency
-            "*Grayscale",                                            ; Handle color variations
-            "*0 *TransBlack", "*0 *TransWhite",                      ; Combine transparency with lowest confidence
-            "*0 *Grayscale"                                          ; Combine grayscale with lowest confidence
+            "*0", "*5", "*10", "*15", "*20", "*25", "*30", "*40", "*50",
+            "*TransBlack", "*TransWhite", "*Grayscale"
         ]
         
-        ; Attempt template matching in each search area with each variation
-        for area in searchAreas {
-            BB_updateStatusAndLog("Searching for '" . templateName . "' in area [" . area[1] . "," . area[2] . "," . area[3] . "," . area[4] . "]")
-            for variation in variations {
-                loop BB_TEMPLATE_RETRIES {
-                    try {
-                        if (ImageSearch(&FoundX, &FoundY, area[1], area[2], area[3], area[4], variation . " " . templateFile)) {
-                            BB_updateStatusAndLog("Template '" . templateName . "' found at x=" . FoundX . ", y=" . FoundY . " with variation '" . variation . "'")
-                            BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY}
-                            return true
-                        }
-                    } catch as err {
-                        BB_updateStatusAndLog("ImageSearch error for '" . templateName . "' with variation '" . variation . "': " . err.Message, true, true)
-                        break
-                    }
-                    Sleep(200)
-                }
-            }
-        }
+        ; Set a reasonable timeout for the entire detection process
+        startTime := A_TickCount
+        timeout := 8000  ; 8 seconds total
         
-        ; Log that template matching failed and proceed to color detection
-        BB_updateStatusAndLog("Template matching failed for '" . templateName . "' after all attempts, proceeding to color detection")
-        
-        ; Fallback: Use color detection for the red circle in "autofarm_off.png" or green circle in "autofarm_on.png"
-        if (templateName = "autofarm_off" || templateName = "autofarm_on") {
-            BB_updateStatusAndLog("Attempting color detection for " . (templateName = "autofarm_off" ? "red" : "green") . " circle")
-            targetColor := (templateName = "autofarm_off") ? 0xFF0055 : 0x00FF00  ; Red for off, green for on
-            tolerance := 15  ; Even lower tolerance for maximum sensitivity
-            stepSize := 5    ; Even smaller step size for finer search
+        ; PHASE 1: Standard template matching with multiple variations and areas
+        BB_updateStatusAndLog("PHASE 1: Starting template matching for '" . templateName . "' with " . searchAreas.Length . " search areas")
+        for areaIndex, area in searchAreas {
+            BB_updateStatusAndLog("Searching area " . areaIndex . ": [" . area[1] . "," . area[2] . "," . area[3] . "," . area[4] . "]")
             
-            ; Search the entire window
-            colorSearchArea := [winX, winY, winX + winW, winY + winH]
-            BB_updateStatusAndLog("Searching for " . (templateName = "autofarm_off" ? "red" : "green") . " circle in area [" . colorSearchArea[1] . "," . colorSearchArea[2] . "," . colorSearchArea[3] . "," . colorSearchArea[4] . "]")
-            x := colorSearchArea[1]
-            while (x <= colorSearchArea[3]) {
-                y := colorSearchArea[2]
-                while (y <= colorSearchArea[4]) {
-                    try {
-                        color := PixelGetColor(x, y, "RGB")
-                        BB_updateStatusAndLog("Checking pixel at [" . x . "," . y . "]: color " . Format("0x{:06X}", color))
-                        if (BB_isColorSimilar(color, targetColor, tolerance)) {
-                            FoundX := x
-                            FoundY := y
-                            BB_updateStatusAndLog((templateName = "autofarm_off" ? "Red" : "Green") . " circle detected at x=" . FoundX . ", y=" . FoundY . " via color detection (color: " . Format("0x{:06X}", color) . ")")
-                            BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY}
-                            return true
-                        }
-                    } catch as err {
-                        BB_updateStatusAndLog("PixelGetColor error at [" . x . "," . y . "]: " . err.Message, true, true)
-                    }
-                    y += stepSize
+            for variation in variations {
+                if (A_TickCount - startTime > timeout) {
+                    BB_updateStatusAndLog("Template matching timed out, moving to next phase", true)
+                    break 2
                 }
-                x += stepSize
+                
+                try {
+                    if (ImageSearch(&FoundX, &FoundY, area[1], area[2], area[3], area[4], variation . " " . templateFile)) {
+                        BB_updateStatusAndLog("Template '" . templateName . "' found at x=" . FoundX . ", y=" . FoundY . " with variation '" . variation . "'")
+                        BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY, timestamp: A_TickCount}
+                        return true
+                    }
+                } catch as err {
+                    BB_updateStatusAndLog("ImageSearch error: " . err.Message, true, true)
+                    continue
+                }
+                
+                ; Brief pause to prevent hammering the CPU
+                Sleep(10)
             }
-            BB_updateStatusAndLog("Color detection failed to find " . (templateName = "autofarm_off" ? "red" : "green") . " circle for '" . templateName . "'")
         }
         
-        BB_imageCache[cacheKey] := {success: false}
+        ; PHASE 2: Advanced color detection for automine/autofarm buttons
+        BB_updateStatusAndLog("PHASE 2: Starting color detection for " . templateName)
+        
+        ; Define colors to look for based on the specific template
+        targetColors := []
+        if (templateName = "autofarm_off") {
+            ; Red colors (for OFF state) with variations
+            targetColors := [0xFF0000, 0xFF0055, 0xDD0000, 0xEE0000, 0xFF2222, 0xFF3333, 0xCC0000]
+        } else if (templateName = "autofarm_on") {
+            ; Green colors (for ON state) with variations
+            targetColors := [0x00FF00, 0x00DD00, 0x00EE00, 0x22FF22, 0x33FF33, 0x00CC00, 0x55FF55]
+        } else {
+            ; Generic button colors (yellows, blues, etc.)
+            targetColors := [0xFFFF00, 0x0000FF, 0x00FFFF, 0xFFCC00, 0xCCFF00, 0x00CCFF]
+        }
+        
+        colorDetectionStartTime := A_TickCount
+        colorTimeout := 3000  ; 3 seconds for color detection phase
+        totalPixelsChecked := 0
+        colorStepSize := 8  ; Check every 8th pixel for speed
+        tolerance := 20     ; Color matching tolerance
+        
+        ; Check each search area with progressively finer detail
+        for areaIndex, area in searchAreas {
+            if (A_TickCount - startTime > timeout) {
+                BB_updateStatusAndLog("Color detection timed out, moving to next phase", true)
+                break
+            }
+            
+            BB_updateStatusAndLog("Color searching area " . areaIndex . ": [" . area[1] . "," . area[2] . "," . area[3] . "," . area[4] . "]")
+            
+            ; For each possible target color
+            for colorIndex, targetColor in targetColors {
+                BB_updateStatusAndLog("Searching for color " . Format("0x{:06X}", targetColor))
+                
+                ; Check pixels in a grid pattern
+                x := area[1]
+                while (x <= area[3]) {
+                    y := area[2]
+                    while (y <= area[4]) {
+                        totalPixelsChecked++
+                        
+                        ; Limit output to avoid log spam
+                        if (totalPixelsChecked <= 20 || Mod(totalPixelsChecked, 1000) = 0) {
+                            BB_updateStatusAndLog("Checking pixel " . totalPixelsChecked . " at [" . x . "," . y . "]")
+                        }
+                        
+                        try {
+                            color := PixelGetColor(x, y, "RGB")
+                            if (BB_isColorSimilar(color, targetColor, tolerance)) {
+                                ; Color match! Now check if it's part of a suitable cluster
+                                if (BB_verifyColorCluster(x, y, targetColor, tolerance, 3, 5)) {
+                                    FoundX := x
+                                    FoundY := y
+                                    BB_updateStatusAndLog("Color cluster found at x=" . FoundX . ", y=" . FoundY . " with color " . Format("0x{:06X}", color))
+                                    BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY, timestamp: A_TickCount}
+                                    return true
+                                }
+                            }
+                        } catch as err {
+                            ; Just skip problematic pixels
+                        }
+                        
+                        y += colorStepSize
+                    }
+                    x += colorStepSize
+                    
+                    ; Check timeout periodically
+                    if (A_TickCount - colorDetectionStartTime > colorTimeout) {
+                        BB_updateStatusAndLog("Color search for this target color timed out")
+                        break 2
+                    }
+                }
+            }
+        }
+        
+        ; PHASE 3: Try to detect UI elements by analyzing screen structure
+        BB_updateStatusAndLog("PHASE 3: Analyzing screen structure for UI elements")
+        
+        ; Search for clusters of pixels with similar colors that might indicate UI elements
+        ; Focusing on left side areas which is most likely for Roblox UI
+        leftSideArea := [winX, winY, winX + (winW // 4), winY + winH]
+        
+        ; Check for horizontal or vertical lines of consistent color (UI borders)
+        if (BB_detectUIElements(leftSideArea, &FoundX, &FoundY)) {
+            BB_updateStatusAndLog("Potential UI element found at x=" . FoundX . ", y=" . FoundY)
+            BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY, timestamp: A_TickCount}
+            return true
+        }
+        
+        ; PHASE 4: Attempt pixel movement detection as last resort
+        BB_updateStatusAndLog("PHASE 4: Analyzing for movement in the game")
+        
+        ; This is a stub - you may need to implement BB_detectMovement based on your game's mechanics
+        ; This would take two screenshots a second apart and compare key pixels
+        ; If movement is detected, you can assume autofarm is active or inactive
+        
+        BB_updateStatusAndLog("All detection methods failed for '" . templateName . "'", true)
+        BB_imageCache[cacheKey] := {success: false, timestamp: A_TickCount}
         return false
     }
     
-    ; Default search logic for other templates, also relative to the window
+    ; Default search logic for other non-autofarm templates
     if (!searchArea) {
         if (templateName = "merchant_window") {
             searchArea := [winX + (winW//2) - 200, winY + (winH//2) - 200, winX + winW - 100, winY + (winH//2) + 200]
@@ -1834,25 +1899,173 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, hwnd, searchArea := "") {
         }
     }
     
+    ; Standard search for other templates
     variations := ["*0", "*10", "*20", "*30", "*50", "*75", "*100"]
     for variation in variations {
-        loop BB_TEMPLATE_RETRIES {
-            try {
-                if (ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], variation . " " . templateFile)) {
-                    BB_updateStatusAndLog("Template '" . templateName . "' found at x=" . FoundX . ", y=" . FoundY)
-                    BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY}
-                    return true
-                }
-            } catch as err {
-                BB_updateStatusAndLog("ImageSearch error for '" . templateName . "': " . err.Message, true, true)
-                break
+        try {
+            if (ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], variation . " " . templateFile)) {
+                BB_updateStatusAndLog("Template '" . templateName . "' found at x=" . FoundX . ", y=" . FoundY)
+                BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY, timestamp: A_TickCount}
+                return true
             }
-            Sleep(200)
+        } catch as err {
+            BB_updateStatusAndLog("ImageSearch error for '" . templateName . "': " . err.Message, true, true)
+            continue
         }
+        Sleep(50)
     }
     
     BB_updateStatusAndLog("Failed to find '" . templateName . "' in area [" . searchArea[1] . "," . searchArea[2] . "," . searchArea[3] . "," . searchArea[4] . "]", true)
-    BB_imageCache[cacheKey] := {success: false}
+    BB_imageCache[cacheKey] := {success: false, timestamp: A_TickCount}
+    return false
+}
+
+; Helper function: Verify if a pixel is part of a color cluster (to avoid false positives)
+BB_verifyColorCluster(x, y, targetColor, tolerance, radius := 3, requiredMatches := 5) {
+    matches := 0
+    
+    ; Check a small grid around the pixel
+    offsetX := -radius
+    while (offsetX <= radius) {
+        offsetY := -radius
+        while (offsetY <= radius) {
+            try {
+                checkColor := PixelGetColor(x + offsetX, y + offsetY, "RGB")
+                if (BB_isColorSimilar(checkColor, targetColor, tolerance)) {
+                    matches++
+                    if (matches >= requiredMatches) {
+                        return true
+                    }
+                }
+            } catch {
+                ; Skip errors (e.g., out-of-bounds pixel access)
+                offsetY++
+                continue
+            }
+            offsetY++
+        }
+        offsetX++
+    }
+    
+    return false
+}
+
+; Helper function: Check if colors are similar within tolerance
+BB_isColorSimilar(color1, color2, tolerance := 20) {
+    ; Extract RGB components
+    r1 := (color1 >> 16) & 0xFF
+    g1 := (color1 >> 8) & 0xFF
+    b1 := color1 & 0xFF
+    
+    r2 := (color2 >> 16) & 0xFF
+    g2 := (color2 >> 8) & 0xFF
+    b2 := color2 & 0xFF
+    
+    ; Check if each component is within tolerance
+    return (Abs(r1 - r2) <= tolerance) && (Abs(g1 - g2) <= tolerance) && (Abs(b1 - b2) <= tolerance)
+}
+
+; Helper function: Detect UI elements by analyzing screen structure
+BB_detectUIElements(searchArea, &FoundX, &FoundY) {
+    ; Set initial values
+    FoundX := 0
+    FoundY := 0
+    
+    ; Define parameters for UI detection
+    stepSize := 10
+    lineLength := 40
+    colorVariance := 15
+    
+    ; Look for horizontal lines (common in UI elements)
+    y := searchArea[2]
+    while (y <= searchArea[4]) {
+        x := searchArea[1]
+        while (x <= searchArea[3] - lineLength) {
+            try {
+                baseColor := PixelGetColor(x, y, "RGB")
+                lineConsistent := true
+                
+                ; Check if we have a consistent horizontal line
+                i := 1
+                while (i <= lineLength) {
+                    checkColor := PixelGetColor(x + i, y, "RGB")
+                    if (!BB_isColorSimilar(baseColor, checkColor, colorVariance)) {
+                        lineConsistent := false
+                        break
+                    }
+                    i++
+                }
+                
+                ; If we found a consistent line, check if it's likely a UI element
+                if (lineConsistent) {
+                    ; Check for color contrast above and below the line
+                    aboveColor := PixelGetColor(x + (lineLength // 2), y - 5, "RGB")
+                    belowColor := PixelGetColor(x + (lineLength // 2), y + 5, "RGB")
+                    
+                    if (!BB_isColorSimilar(baseColor, aboveColor, colorVariance) || 
+                        !BB_isColorSimilar(baseColor, belowColor, colorVariance)) {
+                        ; This might be a UI border!
+                        FoundX := x + (lineLength // 2)
+                        FoundY := y
+                        BB_updateStatusAndLog("Potential UI element detected at x=" . FoundX . ", y=" . FoundY)
+                        return true
+                    }
+                }
+            } catch {
+                ; Continue on error (e.g., out-of-bounds pixel access)
+                x += stepSize
+                continue
+            }
+            x += stepSize
+        }
+        y += stepSize
+    }
+    
+    ; Look for vertical lines (also common in UI elements)
+    x := searchArea[1]
+    while (x <= searchArea[3]) {
+        y := searchArea[2]
+        while (y <= searchArea[4] - lineLength) {
+            try {
+                baseColor := PixelGetColor(x, y, "RGB")
+                lineConsistent := true
+                
+                ; Check if we have a consistent vertical line
+                i := 1
+                while (i <= lineLength) {
+                    checkColor := PixelGetColor(x, y + i, "RGB")
+                    if (!BB_isColorSimilar(baseColor, checkColor, colorVariance)) {
+                        lineConsistent := false
+                        break
+                    }
+                    i++
+                }
+                
+                ; If we found a consistent line, check if it's likely a UI element
+                if (lineConsistent) {
+                    ; Check for color contrast to the left and right of the line
+                    leftColor := PixelGetColor(x - 5, y + (lineLength // 2), "RGB")
+                    rightColor := PixelGetColor(x + 5, y + (lineLength // 2), "RGB")
+                    
+                    if (!BB_isColorSimilar(baseColor, leftColor, colorVariance) || 
+                        !BB_isColorSimilar(baseColor, rightColor, colorVariance)) {
+                        ; This might be a UI border!
+                        FoundX := x
+                        FoundY := y + (lineLength // 2)
+                        BB_updateStatusAndLog("Potential UI element detected at x=" . FoundX . ", y=" . FoundY)
+                        return true
+                    }
+                }
+            } catch {
+                ; Continue on error
+                y += stepSize
+                continue
+            }
+            y += stepSize
+        }
+        x += stepSize
+    }
+    
     return false
 }
 
