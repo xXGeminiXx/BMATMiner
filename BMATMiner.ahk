@@ -14,9 +14,11 @@
 ; == Known Issues ==
 ; - Template matching may fail if game resolution or UI scaling changes. Adjust templates or confidence levels in BB_smartTemplateMatch if needed.
 ; - Window activation may fail on some systems. Ensure Roblox is not minimized and run as admin.
-; - Assumes default Roblox hotkeys ('t' for teleport, 'f' for automine). Update config if different.
+; - Assumes default Roblox hotkeys ('t' for teleport, 'f' for automine/inventory). Update config if different.
 ; - Reconnect in BB_resetGameState may need manual intervention if Roblox URL launches aren’t set up.
 ; - Screenshot functionality is disabled (placeholder in BB_updateStatusAndLog).
+; - Automine detection now uses a large search area on the left side of the screen and falls back to pixel movement detection if template matching fails.
+; - Errors or GUIs are cleared by pressing 'F' (not Esc), which also opens the inventory if no errors/GUIs are present.
 
 ; ===================== Run as Admin =====================
 
@@ -26,7 +28,7 @@ if !A_IsAdmin {
 }
 
 ; ===================== GLOBAL VARIABLES =====================
-global BB_VERSION := "1.4.0"
+global BB_VERSION := "1.4.6"
 global BB_running := false
 global BB_paused := false
 global BB_automationState := "Idle"
@@ -129,11 +131,16 @@ ENABLE_LOGGING=true
 ; ===================== UTILITY FUNCTIONS =====================
 
 BB_setState(newState) {
-    global BB_automationState, BB_stateHistory
+    global BB_automationState, BB_stateHistory, BB_FAILED_INTERACTION_COUNT
     BB_stateHistory.Push({state: BB_automationState, time: A_Now})
     if (BB_stateHistory.Length > 10)
         BB_stateHistory.RemoveAt(1)
     BB_automationState := newState
+    ; Reset failed interaction count on successful state transition (unless transitioning to Error)
+    if (newState != "Error") {
+        BB_FAILED_INTERACTION_COUNT := 0
+        BB_updateStatusAndLog("Reset failed interaction count on successful state transition")
+    }
     BB_updateStatusAndLog("State changed: " . newState)
 }
 
@@ -468,7 +475,7 @@ BB_setupGUI() {
     BB_myGUI.Add("Text", "x10 y10 w400 h20 Center", "🐝 BeeBrained’s PS99 Mining Event Macro v" . BB_VERSION . " 🐝")
     hotkeyText := "Hotkeys: F1 (Start) | F2 (Stop) | P (Pause) | F3 (Explosives) | Esc (Exit)"
     hotkeyText .= " | " . BB_BOMB_HOTKEY . " (Bomb) | " . BB_TNT_CRATE_HOTKEY . " (TNT Crate) | " . BB_TNT_BUNDLE_HOTKEY . " (TNT Bundle)"
-    BB_myGUI.Add("Text", "x10 y30 w400 h20 Center", hotkeyText)
+    BB_myGUI.Add("Text", "x10 y30 w400 h25 Center", hotkeyText)
     
     BB_myGUI.Add("GroupBox", "x10 y60 w400 h120", "Script Status")
     BB_myGUI.Add("Text", "x20 y80 w180 h20", "Status:")
@@ -603,7 +610,7 @@ BB_updateActiveWindows() {
     for hwnd in winList {
         try {
             title := WinGetTitle(hwnd)
-            if (InStr(title, "Roblox") && !BB_hasExcludedTitle(title)) {
+            if (InStr(title, "Roblox") && !InStr(title, "Chrome") && !InStr(title, "Firefox") && !BB_hasExcludedTitle(title)) {
                 BB_active_windows.Push(hwnd)
                 BB_updateStatusAndLog("Found Roblox window: " . title . " (hwnd: " . hwnd . ", active: " . (hwnd = activeHwnd ? "Yes" : "No") . ")")
             }
@@ -652,20 +659,21 @@ BB_checkForError() {
         if BB_smartTemplateMatch(type, &FoundX, &FoundY) {
             errorDetected := true
             errorType := type
+            BB_updateStatusAndLog("WARNING: Error detected (" . errorType . " at x=" . FoundX . ", y=" . FoundY . ")", true, true, true)
             break
         } else {
-            BB_updateStatusAndLog("Template '" . type . "' not found during error check", true, true)
+            BB_updateStatusAndLog("Info: Template '" . type . "' not found during error check")  ; Log as info, not error
         }
     }
 
     if errorDetected {
-        BB_updateStatusAndLog("Error detected (" . errorType . ")", true, true, true)
+        BB_updateStatusAndLog("Handling error: " . errorType)
         
         errorActions := Map(
             "DisableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_checkAutofarming()),
-            "TeleportToArea4", () => (SendInput("{Esc}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu()),
-            "Shopping", () => (SendInput("{Esc}"), Sleep(500), BB_interactWithMerchant()),
-            "TeleportToArea5", () => (SendInput("{Esc}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu()),
+            "TeleportToArea4", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu()),
+            "Shopping", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_interactWithMerchant()),
+            "TeleportToArea5", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu()),
             "EnableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_checkAutofarming()),
             "Idle", () => (SendInput("{Space down}"), Sleep(100), SendInput("{Space up}"), Sleep(500)),
             "Mining", () => (SendInput("{Space down}"), Sleep(100), SendInput("{Space up}"), Sleep(500))
@@ -688,6 +696,31 @@ BB_checkForError() {
         return true
     }
     
+    BB_updateStatusAndLog("No errors detected on screen")
+    return false
+}
+
+BB_goToTop() {
+    FoundX := ""
+    FoundY := ""
+    BB_updateStatusAndLog("Attempting to go to the top of the mining area...")
+    
+    ; Search for the "Go to Top" button on the right side of the screen
+    searchArea := [A_ScreenWidth - 300, 50, A_ScreenWidth - 50, 150]
+    
+    loop 3 {
+        if BB_smartTemplateMatch("go_to_top_button", &FoundX, &FoundY, searchArea) {
+            BB_clickAt(FoundX, FoundY)
+            BB_updateStatusAndLog("Clicked 'Go to Top' button at x=" . FoundX . ", y=" . FoundY)
+            Sleep(5000)  ; Wait for the player to reach the top
+            return true
+        } else {
+            BB_updateStatusAndLog("Info: 'go_to_top_button' not found on attempt " . A_Index)
+            Sleep(1000)
+        }
+    }
+    
+    BB_updateStatusAndLog("Failed to find 'Go to Top' button after 3 attempts")
     return false
 }
 
@@ -765,33 +798,156 @@ BB_checkAutofarming() {
     FoundX := ""
     FoundY := ""
     
-    if BB_smartTemplateMatch("autofarm_on", &FoundX, &FoundY) {
-        BB_updateStatusAndLog("Autofarm is ON (green circle detected)")
-        BB_isAutofarming := true
+    BB_updateStatusAndLog("Checking autofarm state...")
+    if BB_smartTemplateMatch("automine_button", &FoundX, &FoundY) {
+        BB_updateStatusAndLog("Automine button found at x=" . FoundX . ", y=" . FoundY)
+        BB_isAutofarming := true  ; Assume automining is on if the button is found
         return true
+    } else {
+        BB_updateStatusAndLog("Automine button not found, checking for pixel movement...")
+        
+        ; Check for pixel movement in multiple screen regions to detect if the user is moving (indicating automining)
+        regions := [
+            [A_ScreenWidth//4, A_ScreenHeight//4],      ; Top-left
+            [3*A_ScreenWidth//4, A_ScreenHeight//4],    ; Top-right
+            [A_ScreenWidth//4, 3*A_ScreenHeight//4],    ; Bottom-left
+            [3*A_ScreenWidth//4, 3*A_ScreenHeight//4]   ; Bottom-right
+        ]
+        
+        initialColors := []
+        for region in regions {
+            color := PixelGetColor(region[1], region[2], "RGB")
+            initialColors.Push(color)
+        }
+        
+        Sleep(1000)  ; Wait 1 second to check for changes
+        
+        isMoving := false
+        loop 3 {  ; Check multiple times to confirm
+            for index, region in regions {
+                newColor := PixelGetColor(region[1], region[2], "RGB")
+                if (newColor != initialColors[index]) {
+                    isMoving := true
+                    break
+                }
+            }
+            if (isMoving) {
+                break
+            }
+            Sleep(500)
+        }
+        
+        if (isMoving) {
+            BB_updateStatusAndLog("Pixel movement detected, assuming autofarming is ON")
+            BB_isAutofarming := true
+            return true
+        } else {
+            BB_updateStatusAndLog("No pixel movement detected, assuming autofarming is OFF")
+            BB_isAutofarming := false
+            return false
+        }
     }
-    
-    if BB_smartTemplateMatch("autofarm_off", &FoundX, &FoundY) {
-        BB_updateStatusAndLog("Autofarm is OFF (red circle detected)")
-        BB_isAutofarming := false
-        return false
-    }
-    
-    BB_updateStatusAndLog("Could not determine autofarm state")
-    return BB_isAutofarming
 }
 
 BB_disableAutomine() {
     FoundX := ""
     FoundY := ""
+    
+    ; Step 1: Go to the top to ensure the automine button is visible
+    BB_goToTop()
+    
+    ; Step 2: Try to find and click the automine button
     if BB_smartTemplateMatch("automine_button", &FoundX, &FoundY) {
         BB_clickAt(FoundX, FoundY)
-        BB_updateStatusAndLog("Disabled automining")
+        BB_updateStatusAndLog("Clicked automine button to disable automining")
         Sleep(1000)
-        return true
+        
+        ; Validate using pixel movement
+        regions := [
+            [A_ScreenWidth//4, A_ScreenHeight//4],      ; Top-left
+            [3*A_ScreenWidth//4, A_ScreenHeight//4],    ; Top-right
+            [A_ScreenWidth//4, 3*A_ScreenHeight//4],    ; Bottom-left
+            [3*A_ScreenWidth//4, 3*A_ScreenHeight//4]   ; Bottom-right
+        ]
+        
+        initialColors := []
+        for region in regions {
+            color := PixelGetColor(region[1], region[2], "RGB")
+            initialColors.Push(color)
+        }
+        
+        Sleep(1000)  ; Wait 1 second to check for changes
+        
+        isMoving := false
+        loop 3 {
+            for index, region in regions {
+                newColor := PixelGetColor(region[1], region[2], "RGB")
+                if (newColor != initialColors[index]) {
+                    isMoving := true
+                    break
+                }
+            }
+            if (isMoving) {
+                break
+            }
+            Sleep(500)
+        }
+        
+        if (!isMoving) {
+            BB_updateStatusAndLog("No pixel movement detected, automining disabled successfully")
+            global BB_isAutofarming := false
+            return true
+        } else {
+            BB_updateStatusAndLog("Pixel movement still detected, automining may not be disabled")
+        }
     }
-    BB_updateStatusAndLog("Failed to disable automining", true)
-    return false
+    
+    ; Step 3: If the button isn't found, use the F key to toggle automining
+    BB_updateStatusAndLog("Automine button not found, using F key to toggle automining...")
+    SendInput("{f down}")
+    Sleep(100)
+    SendInput("{f up}")
+    Sleep(1000)
+    
+    ; Validate using pixel movement
+    regions := [
+        [A_ScreenWidth//4, A_ScreenHeight//4],      ; Top-left
+        [3*A_ScreenWidth//4, A_ScreenHeight//4],    ; Top-right
+        [A_ScreenWidth//4, 3*A_ScreenHeight//4],    ; Bottom-left
+        [3*A_ScreenWidth//4, 3*A_ScreenHeight//4]   ; Bottom-right
+    ]
+    
+    initialColors := []
+    for region in regions {
+        color := PixelGetColor(region[1], region[2], "RGB")
+        initialColors.Push(color)
+    }
+    
+    Sleep(1000)  ; Wait 1 second to check for changes
+    
+    isMoving := false
+    loop 3 {
+        for index, region in regions {
+            newColor := PixelGetColor(region[1], region[2], "RGB")
+            if (newColor != initialColors[index]) {
+                isMoving := true
+                break
+            }
+        }
+        if (isMoving) {
+            break
+        }
+        Sleep(500)
+    }
+    
+    if (!isMoving) {
+        BB_updateStatusAndLog("No pixel movement detected after using F key, automining disabled successfully")
+        global BB_isAutofarming := false
+        return true
+    } else {
+        BB_updateStatusAndLog("Pixel movement still detected after using F key, failed to disable automining")
+        return false
+    }
 }
 
 BB_openTeleportMenu() {
@@ -880,13 +1036,68 @@ BB_buyMerchantItems() {
 BB_enableAutomine() {
     FoundX := ""
     FoundY := ""
-    if BB_smartTemplateMatch("automine_button", &FoundX, &FoundY) {
-        BB_clickAt(FoundX, FoundY)
-        BB_updateStatusAndLog("Enabled automining")
-        Sleep(1000)
+    BB_updateStatusAndLog("Attempting to enable automining...")
+    
+    ; First, check if automining is already on
+    if BB_checkAutofarming() {
+        BB_updateStatusAndLog("Automining is already enabled")
         return true
     }
-    BB_updateStatusAndLog("Failed to enable automining", true)
+    
+    ; Try to find and click the automine button
+    loop 3 {  ; Retry up to 3 times
+        if BB_smartTemplateMatch("automine_button", &FoundX, &FoundY) {
+            BB_clickAt(FoundX, FoundY)
+            BB_updateStatusAndLog("Clicked automine button at x=" . FoundX . ", y=" . FoundY)
+            Sleep(1000)
+            
+            ; Validate if automining is now on by checking for pixel movement
+            regions := [
+                [A_ScreenWidth//4, A_ScreenHeight//4],      ; Top-left
+                [3*A_ScreenWidth//4, A_ScreenHeight//4],    ; Top-right
+                [A_ScreenWidth//4, 3*A_ScreenHeight//4],    ; Bottom-left
+                [3*A_ScreenWidth//4, 3*A_ScreenHeight//4]   ; Bottom-right
+            ]
+            
+            initialColors := []
+            for region in regions {
+                color := PixelGetColor(region[1], region[2], "RGB")
+                initialColors.Push(color)
+            }
+            
+            Sleep(1000)  ; Wait 1 second to check for changes
+            
+            isMoving := false
+            loop 3 {  ; Check multiple times to confirm
+                for index, region in regions {
+                    newColor := PixelGetColor(region[1], region[2], "RGB")
+                    if (newColor != initialColors[index]) {
+                        isMoving := true
+                        break
+                    }
+                }
+                if (isMoving) {
+                    break
+                }
+                Sleep(500)
+            }
+            
+            if (isMoving) {
+                BB_updateStatusAndLog("Pixel movement detected after clicking, automining enabled successfully")
+                global BB_isAutofarming := true
+                return true
+            } else {
+                BB_updateStatusAndLog("No pixel movement detected after clicking, retrying...")
+                Sleep(1000)
+            }
+        } else {
+            BB_updateStatusAndLog("Info: 'automine_button' not found on attempt " . A_Index)
+            Sleep(1000)
+        }
+    }
+    
+    BB_updateStatusAndLog("Failed to enable automining after 3 attempts")
+    global BB_isAutofarming := false
     return false
 }
 
@@ -1151,12 +1362,26 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
     }
     
     if (!searchArea) {
-        searchArea := [0, 0, A_ScreenWidth, A_ScreenHeight]
+        if (templateName = "automine_button") {
+            ; Search a large area on the left side of the screen (based on 1920x1080 resolution)
+            searchArea := [50, 300, 250, 600]
+        } else if (templateName = "merchant_window") {
+            ; Search the center-right of the screen for the merchant window
+            searchArea := [A_ScreenWidth//2 - 200, A_ScreenHeight//2 - 200, A_ScreenWidth - 100, A_ScreenHeight//2 + 200]
+        } else if (templateName = "error_message" || templateName = "error_message_alt1" || templateName = "connection_lost") {
+            ; Search the center of the screen for error messages
+            searchArea := [A_ScreenWidth//2 - 300, A_ScreenHeight//2 - 200, A_ScreenWidth//2 + 300, A_ScreenHeight//2 + 200]
+        } else {
+            ; Default to full screen for other templates
+            searchArea := [0, 0, A_ScreenWidth, A_ScreenHeight]
+        }
     }
     
     loop BB_TEMPLATE_RETRIES {
         try {
-            if (ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], "*" . 50 . " " . templateFile)) {
+            BB_updateStatusAndLog("Searching for '" . templateName . "' in area [" . searchArea[1] . "," . searchArea[2] . "," . searchArea[3] . "," . searchArea[4] . "]")
+            variation := (templateName = "automine_button") ? "*150" : "*75"
+            if (ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], variation . " " . templateFile)) {
                 BB_updateStatusAndLog("Template '" . templateName . "' found at x=" . FoundX . ", y=" . FoundY)
                 BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY}
                 return true
