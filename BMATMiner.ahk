@@ -28,9 +28,10 @@ if !A_IsAdmin {
 }
 
 ; ===================== GLOBAL VARIABLES =====================
-global BB_VERSION := "1.4.6"
+global BB_VERSION := "1.5.0"
 global BB_running := false
 global BB_paused := false
+global gameStateEnsured := false
 global BB_automationState := "Idle"
 global BB_stateHistory := []
 global BB_CLICK_DELAY_MAX := 1500
@@ -144,10 +145,40 @@ BB_setState(newState) {
     BB_updateStatusAndLog("State changed: " . newState)
 }
 
+BB_antiAfkLoop() {
+    global BB_running, BB_paused, BB_ANTI_AFK_INTERVAL
+    if (!BB_running || BB_paused) {
+        BB_updateStatusAndLog("Anti-AFK loop skipped (not running or paused)")
+        return
+    }
+    
+    hwnd := WinGetID("A")
+    if (!hwnd || WinGetProcessName(hwnd) != "RobloxPlayerBeta.exe") {
+        BB_updateStatusAndLog("No Roblox window active for anti-AFK action", true)
+        return
+    }
+    
+    ; Simulate a jump to prevent AFK detection
+    SendInput("{Space down}")
+    Sleep(100)
+    SendInput("{Space up}")
+    BB_updateStatusAndLog("Anti-AFK action: Jumped to prevent disconnect")
+    
+    ; Optional: Random movement to mimic player activity
+    moveDir := Random(1, 4)
+    moveKey := (moveDir = 1) ? "w" : (moveDir = 2) ? "a" : (moveDir = 3) ? "s" : "d"
+    SendInput("{" . moveKey . " down}")
+    Sleep(Random(500, 1000))
+    SendInput("{" . moveKey . " up}")
+    BB_updateStatusAndLog("Anti-AFK action: Moved " . moveKey . " to prevent disconnect")
+}
+
+
 BB_updateStatusAndLog(message, updateGUI := true, isError := false, takeScreenshot := false) {
     global BB_ENABLE_LOGGING, BB_logFile, BB_myGUI, BB_isAutofarming, BB_currentArea, BB_merchantState, BB_lastError
     global BB_lastBombStatus, BB_lastTntCrateStatus, BB_lastTntBundleStatus, BB_validTemplates, BB_totalTemplates
     static firstRun := true
+    static emeraldBlockCount := 0
     
     if BB_ENABLE_LOGGING {
         timestamp := FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss")
@@ -167,6 +198,17 @@ BB_updateStatusAndLog(message, updateGUI := true, isError := false, takeScreensh
     if isError
         BB_lastError := message
     
+    ; Reset emerald block count if requested
+    if (message = "Resetting emerald block count") {
+        emeraldBlockCount := 0
+    }
+    
+    ; Update emerald block count
+    if (InStr(message, "Found") && InStr(message, "emerald blocks")) {
+        RegExMatch(message, "Found\s+(\d+)\s+emerald\s+block(s)?", &match)
+        emeraldBlockCount += match[1]
+    }
+    
     if updateGUI && IsObject(BB_myGUI) {
         BB_myGUI["Status"].Text := (BB_running ? (BB_paused ? "Paused" : "Running") : "Idle")
         BB_myGUI["Status"].SetFont(BB_running ? (BB_paused ? "cOrange" : "cGreen") : "cRed")
@@ -182,6 +224,7 @@ BB_updateStatusAndLog(message, updateGUI := true, isError := false, takeScreensh
         BB_myGUI["BombStatus"].Text := BB_lastBombStatus
         BB_myGUI["TntCrateStatus"].Text := BB_lastTntCrateStatus
         BB_myGUI["TntBundleStatus"].Text := BB_lastTntBundleStatus
+        BB_myGUI["EmeraldBlockCount"].Text := emeraldBlockCount
         BB_myGUI["LastAction"].Text := message
         BB_myGUI["LastError"].Text := BB_lastError
         BB_myGUI["LastError"].SetFont(isError ? "cRed" : "cBlack")
@@ -315,20 +358,41 @@ BB_httpDownload(url, dest) {
     }
 }
 
+; Activates a Roblox window robustly, ensuring it is ready for interaction.
+; Parameters:
+;   hwnd: The handle of the window to activate.
+; Returns: True if activation is successful, False otherwise.
 BB_robustWindowActivation(hwnd) {
-    try {
-        WinActivate(hwnd)
-        if WinWaitActive("ahk_id " . hwnd, , 2) {
-            BB_updateStatusAndLog("Window activated successfully: " . hwnd)
-            return true
-        } else {
-            BB_updateStatusAndLog("Window activation timed out: " . hwnd, true)
-            return false
-        }
-    } catch as err {
-        BB_updateStatusAndLog("Window activation failed: " . hwnd . " - " . err.Message, true, true)
+    global BB_updateStatusAndLog
+    
+    if (!hwnd || !WinExist("ahk_id " . hwnd)) {
+        BB_updateStatusAndLog("Window does not exist: " . hwnd, true, true)
         return false
     }
+    
+    ; Check if the window is already active
+    if (WinActive("ahk_id " . hwnd)) {
+        BB_updateStatusAndLog("Window already active: " . hwnd)
+        return true
+    }
+    
+    ; Attempt to activate the window
+    loop 3 {
+        try {
+            WinActivate("ahk_id " . hwnd)
+            Sleep(500)  ; Increased delay to ensure activation
+            if (WinActive("ahk_id " . hwnd)) {
+                BB_updateStatusAndLog("Window activated successfully: " . hwnd)
+                return true
+            }
+        } catch as err {
+            BB_updateStatusAndLog("Error activating window " . hwnd . ": " . err.Message, true, true)
+        }
+        Sleep(500)
+    }
+    
+    BB_updateStatusAndLog("Failed to activate window after 3 attempts: " . hwnd, true, true)
+    return false
 }
 
 BB_clickAt(x, y) {
@@ -410,6 +474,7 @@ BB_loadConfig() {
 		"automine_button", "automine_button.png",
 		"teleport_button", "teleport_button.png",
 		"area_4_button", "area_4_button.png",
+		"emerald_block", "emerald_block.png",
 		"area_5_button", "area_5_button.png",
 		"mining_merchant", "mining_merchant.png",
 		"buy_button", "buy_button.png",
@@ -469,7 +534,7 @@ BB_loadConfig() {
 
 BB_setupGUI() {
     global BB_myGUI, BB_BOMB_HOTKEY, BB_TNT_CRATE_HOTKEY, BB_TNT_BUNDLE_HOTKEY, BB_VERSION
-    BB_myGUI := Gui("", "🐝 BeeBrained’s PS99 Mining Event Macro v" . BB_VERSION . " 🐝")  ; Removed +AlwaysOnTop
+    BB_myGUI := Gui("", "🐝 BeeBrained’s PS99 Mining Event Macro v" . BB_VERSION . " 🐝")
     BB_myGUI.OnEvent("Close", BB_exitApp)
     
     BB_myGUI.Add("Text", "x10 y10 w400 h20 Center", "🐝 BeeBrained’s PS99 Mining Event Macro v" . BB_VERSION . " 🐝")
@@ -489,30 +554,37 @@ BB_setupGUI() {
     BB_myGUI.Add("Text", "x20 y160 w180 h20", "Templates Valid:")
     BB_myGUI.Add("Text", "x200 y160 w200 h20", "0/0").Name := "TemplateStatus"
     
-    BB_myGUI.Add("GroupBox", "x10 y190 w400 h80", "Game State")
+    BB_myGUI.Add("GroupBox", "x10 y190 w400 h100", "Game State")
     BB_myGUI.Add("Text", "x20 y210 w180 h20", "Current Area:")
     BB_myGUI.Add("Text", "x200 y210 w200 h20", "Unknown").Name := "CurrentArea"
     BB_myGUI.Add("Text", "x20 y230 w180 h20", "Merchant Interaction:")
     BB_myGUI.Add("Text", "x200 y230 w200 h20", "Not Interacted").Name := "MerchantState"
+    BB_myGUI.Add("Text", "x20 y250 w180 h20", "Emerald Blocks Found:")
+    BB_myGUI.Add("Text", "x200 y250 w200 h20", "0").Name := "EmeraldBlockCount"
     
-    BB_myGUI.Add("GroupBox", "x10 y280 w400 h80", "Explosives Status")
-    BB_myGUI.Add("Text", "x20 y300 w180 h20", "Bomb:")
-    BB_myGUI.Add("Text", "x200 y300 w200 h20", "Idle").Name := "BombStatus"
-    BB_myGUI.Add("Text", "x20 y320 w180 h20", "TNT Crate:")
-    BB_myGUI.Add("Text", "x200 y320 w200 h20", "Idle").Name := "TntCrateStatus"
-    BB_myGUI.Add("Text", "x20 y340 w180 h20", "TNT Bundle:")
-    BB_myGUI.Add("Text", "x200 y340 w200 h20", "Idle").Name := "TntBundleStatus"
+    BB_myGUI.Add("GroupBox", "x10 y300 w400 h80", "Explosives Status")
+    BB_myGUI.Add("Text", "x20 y320 w180 h20", "Bomb:")
+    BB_myGUI.Add("Text", "x200 y320 w200 h20", "Idle").Name := "BombStatus"
+    BB_myGUI.Add("Text", "x20 y340 w180 h20", "TNT Crate:")
+    BB_myGUI.Add("Text", "x200 y340 w200 h20", "Idle").Name := "TntCrateStatus"
+    BB_myGUI.Add("Text", "x20 y360 w180 h20", "TNT Bundle:")
+    BB_myGUI.Add("Text", "x200 y360 w200 h20", "Idle").Name := "TntBundleStatus"
     
-    BB_myGUI.Add("GroupBox", "x10 y370 w400 h100", "Last Action/Error")
-    BB_myGUI.Add("Text", "x20 y390 w180 h20", "Last Action:")
-    BB_myGUI.Add("Text", "x200 y390 w200 h40 Wrap", "None").Name := "LastAction"
-    BB_myGUI.Add("Text", "x20 y430 w180 h20", "Last Error:")
-    BB_myGUI.Add("Text", "x200 y430 w200 h40 Wrap cRed", "None").Name := "LastError"
+    BB_myGUI.Add("GroupBox", "x10 y390 w400 h100", "Last Action/Error")
+    BB_myGUI.Add("Text", "x20 y410 w180 h20", "Last Action:")
+    BB_myGUI.Add("Text", "x200 y410 w200 h40 Wrap", "None").Name := "LastAction"
+    BB_myGUI.Add("Text", "x20 y450 w180 h20", "Last Error:")
+    BB_myGUI.Add("Text", "x200 y450 w200 h40 Wrap cRed", "None").Name := "LastError"
+	
+	BB_myGUI.Add("Text", "x20 y270 w180 h20", "Failed Interactions:")
+	BB_myGUI.Add("Text", "x200 y270 w200 h20", "0").Name := "FailedCount"
+	; Update in BB_updateStatusAndLog
+	BB_myGUI["FailedCount"].Text := BB_FAILED_INTERACTION_COUNT
     
-    BB_myGUI.Add("Button", "x10 y480 w120 h30", "Reload Config").OnEvent("Click", BB_loadConfigFromFile)
-    BB_myGUI.Add("Button", "x290 y480 w120 h30", "Clear Log").OnEvent("Click", BB_clearLog)
+    BB_myGUI.Add("Button", "x10 y500 w120 h30", "Reload Config").OnEvent("Click", BB_loadConfigFromFile)
+    BB_myGUI.Add("Button", "x290 y500 w120 h30", "Clear Log").OnEvent("Click", BB_clearLog)
     
-    BB_myGUI.Show("x0 y0 w420 h520")
+    BB_myGUI.Show("x0 y0 w420 h540")
 }
 
 ; ===================== HOTKEYS =====================
@@ -547,7 +619,10 @@ BB_startAutomation(*) {
         SetTimer(BB_tntBundleLoop, 0)
         BB_updateStatusAndLog("Explosives timers disabled")
     }
-    SetTimer(BB_miningAutomationLoop, 1000)  ; Start the loop with a 1-second interval
+    SetTimer(BB_miningAutomationLoop, 1000)
+    ; Reset emerald block count
+    BB_updateStatusAndLog("Resetting emerald block count", false)
+    BB_myGUI["EmeraldBlockCount"].Text := "0"
 }
 
 BB_stopAutomation(*) {
@@ -572,6 +647,57 @@ BB_togglePause(*) {
         BB_updateStatusAndLog(BB_paused ? "Paused" : "Resumed")
         Sleep 200
     }
+}
+
+; Ensures the game UI is in a state where the automine button is visible by resetting the UI.
+; Parameters:
+;   hwnd: The handle of the Roblox window to ensure the state for.
+BB_ensureGameState(hwnd) {
+    global BB_updateStatusAndLog
+    
+    ; Log the start of the game state reset
+    BB_updateStatusAndLog("Ensuring game state for reliable automine button detection (hwnd: " . hwnd . ")")
+    
+    ; Verify the window handle
+    if (!hwnd || !WinExist("ahk_id " . hwnd) || WinGetProcessName(hwnd) != "RobloxPlayerBeta.exe") {
+        BB_updateStatusAndLog("Invalid Roblox window handle for ensuring game state: " . hwnd, true, true)
+        return
+    }
+    
+    ; Get the Roblox window's position and size
+    WinGetPos(&winX, &winY, &winW, &winH, "ahk_id " . hwnd)
+    
+    ; Open and close the inventory to reset UI overlays (default hotkey 'f')
+    loop 2 {
+        SendInput("{f down}")
+        Sleep(100)
+        SendInput("{f up}")
+        Sleep(500)
+    }
+    
+    ; Click in the top-right corner of the window to close any popups
+    closeX := winX + winW - 50
+    closeY := winY + 50
+    BB_clickAt(closeX, closeY)
+    BB_updateStatusAndLog("Clicked top-right corner to close potential popups at x=" . closeX . ", y=" . closeY)
+    Sleep(500)
+    
+    ; Click in the center of the window to dismiss any other overlays
+    centerX := winX + (winW / 2)
+    centerY := winY + (winH / 2)
+    BB_clickAt(centerX, centerY)
+    BB_updateStatusAndLog("Clicked center of window to dismiss overlays at x=" . centerX . ", y=" . centerY)
+    Sleep(500)
+    
+    ; Jump to close any remaining menus that might close on jump
+    loop 2 {
+        SendInput("{Space down}")
+        Sleep(100)
+        SendInput("{Space up}")
+        Sleep(500)
+    }
+    
+    BB_updateStatusAndLog("Game state ensured: UI reset")
 }
 
 BB_toggleExplosives(*) {
@@ -647,43 +773,49 @@ BB_hasExcludedTitle(title) {
 
 ; ===================== ERROR HANDLING =====================
 
-BB_checkForError() {
-    global BB_automationState, BB_FAILED_INTERACTION_COUNT, BB_currentArea, BB_merchantState
-    FoundX := ""
-    FoundY := ""
-    errorTypes := ["error_message", "error_message_alt1", "connection_lost"]
+; Checks for error messages on the screen (e.g., connection lost, generic errors).
+; Parameters:
+;   hwnd: The handle of the Roblox window to check.
+; Returns: True if an error is detected, False otherwise.
+BB_checkForError(hwnd) {
+    global BB_updateStatusAndLog
+    
     errorDetected := false
     errorType := ""
-
+    FoundX := ""
+    FoundY := ""
+    
+    errorTypes := ["error_message", "error_message_alt1", "connection_lost"]
     for type in errorTypes {
-        if BB_smartTemplateMatch(type, &FoundX, &FoundY) {
+        if BB_smartTemplateMatch(type, &FoundX, &FoundY, hwnd) {
             errorDetected := true
             errorType := type
             BB_updateStatusAndLog("WARNING: Error detected (" . errorType . " at x=" . FoundX . ", y=" . FoundY . ")", true, true, true)
             break
         } else {
-            BB_updateStatusAndLog("Info: Template '" . type . "' not found during error check")  ; Log as info, not error
+            BB_updateStatusAndLog("Info: Template '" . type . "' not found during error check")
         }
     }
-
+    
     if errorDetected {
         BB_updateStatusAndLog("Handling error: " . errorType)
         
-        errorActions := Map(
-            "DisableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_checkAutofarming()),
-            "TeleportToArea4", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu()),
-            "Shopping", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_interactWithMerchant()),
-            "TeleportToArea5", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu()),
-            "EnableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_checkAutofarming()),
-            "Idle", () => (SendInput("{Space down}"), Sleep(100), SendInput("{Space up}"), Sleep(500)),
-            "Mining", () => (SendInput("{Space down}"), Sleep(100), SendInput("{Space up}"), Sleep(500))
-        )
-
+		errorActions := Map(
+			"DisableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_checkAutofarming(hwnd)),
+			"TeleportToArea4", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu(hwnd)),
+			"Shopping", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_interactWithMerchant(hwnd)),
+			"TeleportToArea5", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu(hwnd)),
+			"EnableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_checkAutofarming(hwnd)),
+			"Idle", () => (SendInput("{Space down}"), Sleep(100), SendInput("{Space up}"), Sleep(500)),
+			"Mining", () => (SendInput("{Space down}"), Sleep(100), SendInput("{Space up}"), Sleep(500))
+		)
+        
         action := errorActions.Has(BB_automationState) ? errorActions[BB_automationState] : errorActions["Idle"]
         actionResult := action()
         
         BB_updateStatusAndLog("Attempted recovery from error in state " . BB_automationState . " (Result: " . (actionResult ? "Success" : "Failed") . ")")
         
+        global BB_FAILED_INTERACTION_COUNT
         BB_FAILED_INTERACTION_COUNT++
         if (BB_FAILED_INTERACTION_COUNT >= BB_MAX_FAILED_INTERACTIONS) {
             BB_updateStatusAndLog("Too many failed recoveries (" . BB_FAILED_INTERACTION_COUNT . "), attempting to reset game state", true, true)
@@ -705,11 +837,18 @@ BB_goToTop() {
     FoundY := ""
     BB_updateStatusAndLog("Attempting to go to the top of the mining area...")
     
+    ; Get the active Roblox window
+    hwnd := WinGetID("A")
+    if (!hwnd || WinGetProcessName(hwnd) != "RobloxPlayerBeta.exe") {
+        BB_updateStatusAndLog("No Roblox window active for 'Go to Top' action", true, true)
+        return false
+    }
+    
     ; Search for the "Go to Top" button on the right side of the screen
     searchArea := [A_ScreenWidth - 300, 50, A_ScreenWidth - 50, 150]
     
     loop 3 {
-        if BB_smartTemplateMatch("go_to_top_button", &FoundX, &FoundY, searchArea) {
+        if BB_smartTemplateMatch("go_to_top_button", &FoundX, &FoundY, hwnd, searchArea) {
             BB_clickAt(FoundX, FoundY)
             BB_updateStatusAndLog("Clicked 'Go to Top' button at x=" . FoundX . ", y=" . FoundY)
             Sleep(5000)  ; Wait for the player to reach the top
@@ -770,283 +909,138 @@ BB_resetGameState() {
 BB_checkForUpdates() {
     global BB_VERSION
     versionUrl := "https://raw.githubusercontent.com/xXGeminiXx/BMATMiner/main/version.txt"
-    try {
-        http := ComObject("WinHttp.WinHttpRequest.5.1")
-        http.Open("GET", versionUrl, false)
-        http.Send()
-        if (http.Status != 200)
-            throw Error("HTTP status " . http.Status . " received")
-        latestVersion := Trim(http.ResponseText, " `t`r`n")
-        BB_updateStatusAndLog("Current version: " . BB_VERSION . " | Remote version: " . latestVersion)
-        if (!RegExMatch(latestVersion, "^\d+\.\d+\.\d+$")) {
-            throw Error("Invalid version format: '" . latestVersion . "'")
+    maxRetries := 3
+    retryDelay := 2000
+    
+    loop maxRetries {
+        try {
+            http := ComObject("WinHttp.WinHttpRequest.5.1")
+            http.Open("GET", versionUrl, false)
+            http.Send()
+            if (http.Status != 200) {
+                throw Error("HTTP status " . http.Status . " received")
+            }
+            latestVersion := Trim(http.ResponseText, " `t`r`n")
+            if (!RegExMatch(latestVersion, "^\d+\.\d+\.\d+$")) {
+                throw Error("Invalid version format: '" . latestVersion . "'")
+            }
+            BB_updateStatusAndLog("Current version: " . BB_VERSION . " | Remote version: " . latestVersion)
+            if (latestVersion != BB_VERSION) {
+                BB_updateStatusAndLog("New version available: " . latestVersion . " (current: " . BB_VERSION . ")")
+                MsgBox("A new version (" . latestVersion . ") is available! Current version: " . BB_VERSION . ". Please update from the GitHub repository.", "Update Available", 0x40)
+            } else {
+                BB_updateStatusAndLog("Script is up to date (version: " . BB_VERSION . ")")
+            }
+            return
+        } catch as err {
+            BB_updateStatusAndLog("Failed to check for updates (attempt " . A_Index . "): " . err.Message, true, true)
+            if (A_Index < maxRetries) {
+                BB_updateStatusAndLog("Retrying in " . (retryDelay / 1000) . " seconds...")
+                Sleep(retryDelay)
+            }
         }
-        if (latestVersion != BB_VERSION) {
-            BB_updateStatusAndLog("New version available: " . latestVersion . " (current: " . BB_VERSION . ")")
-        } else {
-            BB_updateStatusAndLog("Script is up to date (version: " . BB_VERSION . ")")
-        }
-    } catch as err {
-        BB_updateStatusAndLog("Failed to check for updates: " . err.Message, true, true)
     }
+    BB_updateStatusAndLog("Failed to check for updates after " . maxRetries . " attempts", true, true)
 }
 
 ; ===================== MINING AUTOMATION FUNCTIONS =====================
-
-BB_checkAutofarming() {
-    global BB_isAutofarming
+; Checks if automining is currently active in the game.
+; Parameters:
+;   hwnd: The handle of the Roblox window to check.
+; Returns: True if automining is on, False if it's off.
+BB_checkAutofarming(hwnd) {
+    global BB_isAutofarming, BB_updateStatusAndLog, gameStateEnsured
+    
+    ; Log the start of the automining check
+    BB_updateStatusAndLog("Checking automining state (hwnd: " . hwnd . ")...")
+    
+    ; Ensure the game UI is in a state where the button is visible, but only once per cycle
+    if (!gameStateEnsured) {
+        BB_ensureGameState(hwnd)
+        gameStateEnsured := true
+    }
+    
+    ; Variables to store the coordinates of the detected button
     FoundX := ""
     FoundY := ""
     
-    BB_updateStatusAndLog("Checking autofarm state...")
-    if BB_smartTemplateMatch("automine_button", &FoundX, &FoundY) {
-        BB_updateStatusAndLog("Automine button found at x=" . FoundX . ", y=" . FoundY)
-        BB_isAutofarming := true  ; Assume automining is on if the button is found
+    ; First, try to detect the "autofarm_off.png" button, which indicates automining is off
+    if (BB_smartTemplateMatch("autofarm_off", &FoundX, &FoundY, hwnd)) {
+        BB_updateStatusAndLog("Detected 'autofarm_off' button at x=" . FoundX . ", y=" . FoundY . ", automining is OFF")
+        BB_isAutofarming := false
+        return false
+    }
+    
+    ; If "autofarm_off.png" is not found, check for "autofarm_on.png" to confirm automining is on
+    if (BB_smartTemplateMatch("autofarm_on", &FoundX, &FoundY, hwnd)) {
+        BB_updateStatusAndLog("Detected 'autofarm_on' button at x=" . FoundX . ", y=" . FoundY . ", automining is ON")
+        BB_isAutofarming := true
         return true
-    } else {
-        BB_updateStatusAndLog("Automine button not found, checking for pixel movement...")
-        
-        ; Check for pixel movement in multiple screen regions to detect if the user is moving (indicating automining)
-        regions := [
-            [A_ScreenWidth//4, A_ScreenHeight//4],      ; Top-left
-            [3*A_ScreenWidth//4, A_ScreenHeight//4],    ; Top-right
-            [A_ScreenWidth//4, 3*A_ScreenHeight//4],    ; Bottom-left
-            [3*A_ScreenWidth//4, 3*A_ScreenHeight//4]   ; Bottom-right
-        ]
-        
-        initialColors := []
-        for region in regions {
-            color := PixelGetColor(region[1], region[2], "RGB")
-            initialColors.Push(color)
-        }
-        
-        Sleep(1000)  ; Wait 1 second to check for changes
-        
-        isMoving := false
-        loop 3 {  ; Check multiple times to confirm
-            for index, region in regions {
-                newColor := PixelGetColor(region[1], region[2], "RGB")
-                if (newColor != initialColors[index]) {
-                    isMoving := true
-                    break
-                }
-            }
-            if (isMoving) {
-                break
-            }
-            Sleep(500)
-        }
-        
-        if (isMoving) {
-            BB_updateStatusAndLog("Pixel movement detected, assuming autofarming is ON")
-            BB_isAutofarming := true
-            return true
-        } else {
-            BB_updateStatusAndLog("No pixel movement detected, assuming autofarming is OFF")
-            BB_isAutofarming := false
-            return false
-        }
-    }
-}
-
-BB_disableAutomine() {
-    FoundX := ""
-    FoundY := ""
-    
-    ; Step 1: Go to the top to ensure the automine button is visible
-    BB_goToTop()
-    
-    ; Step 2: Try to find and click the automine button
-    if BB_smartTemplateMatch("automine_button", &FoundX, &FoundY) {
-        BB_clickAt(FoundX, FoundY)
-        BB_updateStatusAndLog("Clicked automine button to disable automining")
-        Sleep(1000)
-        
-        ; Validate using pixel movement
-        regions := [
-            [A_ScreenWidth//4, A_ScreenHeight//4],      ; Top-left
-            [3*A_ScreenWidth//4, A_ScreenHeight//4],    ; Top-right
-            [A_ScreenWidth//4, 3*A_ScreenHeight//4],    ; Bottom-left
-            [3*A_ScreenWidth//4, 3*A_ScreenHeight//4]   ; Bottom-right
-        ]
-        
-        initialColors := []
-        for region in regions {
-            color := PixelGetColor(region[1], region[2], "RGB")
-            initialColors.Push(color)
-        }
-        
-        Sleep(1000)  ; Wait 1 second to check for changes
-        
-        isMoving := false
-        loop 3 {
-            for index, region in regions {
-                newColor := PixelGetColor(region[1], region[2], "RGB")
-                if (newColor != initialColors[index]) {
-                    isMoving := true
-                    break
-                }
-            }
-            if (isMoving) {
-                break
-            }
-            Sleep(500)
-        }
-        
-        if (!isMoving) {
-            BB_updateStatusAndLog("No pixel movement detected, automining disabled successfully")
-            global BB_isAutofarming := false
-            return true
-        } else {
-            BB_updateStatusAndLog("Pixel movement still detected, automining may not be disabled")
-        }
     }
     
-    ; Step 3: If the button isn't found, use the F key to toggle automining
-    BB_updateStatusAndLog("Automine button not found, using F key to toggle automining...")
-    SendInput("{f down}")
-    Sleep(100)
-    SendInput("{f up}")
-    Sleep(1000)
+    ; Fallback: Use pixel movement detection to infer automining state
+    BB_updateStatusAndLog("Neither 'autofarm_off' nor 'autofarm_on' button found, analyzing pixel movement")
     
-    ; Validate using pixel movement
+    ; Define regions to check for pixel movement (indicating mining activity)
+    scaleX := A_ScreenWidth / 1920
+    scaleY := A_ScreenHeight / 1080
     regions := [
-        [A_ScreenWidth//4, A_ScreenHeight//4],      ; Top-left
-        [3*A_ScreenWidth//4, A_ScreenHeight//4],    ; Top-right
-        [A_ScreenWidth//4, 3*A_ScreenHeight//4],    ; Bottom-left
-        [3*A_ScreenWidth//4, 3*A_ScreenHeight//4]   ; Bottom-right
+        [Round(A_ScreenWidth//2), Round(A_ScreenHeight//2)],     ; Center
+        [Round(A_ScreenWidth//4), Round(A_ScreenHeight//4)],     ; Top-left
+        [Round(3*A_ScreenWidth//4), Round(3*A_ScreenHeight//4)]  ; Bottom-right
     ]
     
+    ; Capture initial colors in each region
     initialColors := []
     for region in regions {
         color := PixelGetColor(region[1], region[2], "RGB")
         initialColors.Push(color)
+        BB_updateStatusAndLog("Pixel movement check at [" . region[1] . "," . region[2] . "]: initial color " . color)
     }
     
-    Sleep(1000)  ; Wait 1 second to check for changes
-    
-    isMoving := false
-    loop 3 {
-        for index, region in regions {
-            newColor := PixelGetColor(region[1], region[2], "RGB")
-            if (newColor != initialColors[index]) {
-                isMoving := true
-                break
-            }
+    ; Wait 1 second and check for changes
+    Sleep(1000)
+    changes := 0
+    threshold := 1  ; Simplified threshold
+    for index, region in regions {
+        newColor := PixelGetColor(region[1], region[2], "RGB")
+        if (newColor != initialColors[index]) {
+            changes++
+            BB_updateStatusAndLog("Pixel change detected at [" . region[1] . "," . region[2] . "]: " . initialColors[index] . " -> " . newColor)
         }
-        if (isMoving) {
-            break
-        }
-        Sleep(500)
     }
     
-    if (!isMoving) {
-        BB_updateStatusAndLog("No pixel movement detected after using F key, automining disabled successfully")
-        global BB_isAutofarming := false
+    ; Determine automining state based on pixel movement
+    if (changes > threshold) {
+        BB_updateStatusAndLog("Significant pixel movement detected (" . changes . " changes), automining is ON")
+        BB_isAutofarming := true
         return true
     } else {
-        BB_updateStatusAndLog("Pixel movement still detected after using F key, failed to disable automining")
+        BB_updateStatusAndLog("No significant pixel movement (" . changes . " changes), automining is OFF")
+        BB_isAutofarming := false
         return false
     }
 }
 
-BB_openTeleportMenu() {
-    global BB_TELEPORT_HOTKEY
-    FoundX := ""
-    FoundY := ""
-    if BB_smartTemplateMatch("teleport_button", &FoundX, &FoundY) {
-        BB_clickAt(FoundX, FoundY)
-        BB_updateStatusAndLog("Opened teleport menu")
-        Sleep(1000)
-        return true
-    }
-    SendInput("{" . BB_TELEPORT_HOTKEY . " down}")
-    Sleep(100)
-    SendInput("{" . BB_TELEPORT_HOTKEY . " up}")
-    BB_updateStatusAndLog("Failed to open teleport menu via image, used hotkey " . BB_TELEPORT_HOTKEY)
-    Sleep(1000)
-    if BB_smartTemplateMatch("area_4_button", &FoundX, &FoundY) {
-        BB_updateStatusAndLog("Teleport menu opened successfully via hotkey")
-        return true
-    }
-    BB_updateStatusAndLog("Failed to open teleport menu", true)
-    return false
-}
-
-BB_teleportToArea(areaTemplate) {
-    global BB_currentArea
-    FoundX := ""
-    FoundY := ""
-    if BB_smartTemplateMatch(areaTemplate, &FoundX, &FoundY) {
-        BB_clickAt(FoundX, FoundY)
-        BB_currentArea := (areaTemplate = "area_4_button") ? "Area 4" : (areaTemplate = "area_5_button") ? "Area 5" : "Unknown"
-        BB_updateStatusAndLog("Teleported to " . BB_currentArea)
-        Sleep(2000)
-        return true
-    }
-    BB_updateStatusAndLog("Failed to teleport to " . areaTemplate, true)
-    return false
-}
-
-BB_interactWithMerchant() {
-    global BB_merchantState
-    FoundX := ""
-    FoundY := ""
-    if BB_smartTemplateMatch("mining_merchant", &FoundX, &FoundY) {
-        BB_clickAt(FoundX, FoundY)
-        BB_merchantState := "Interacted"
-        BB_updateStatusAndLog("Interacting with merchant")
-        Sleep(1000)
-        return true
-    }
-    BB_merchantState := "Failed to Interact"
-    BB_updateStatusAndLog("Failed to interact with merchant", true)
-    return false
-}
-
-BB_buyMerchantItems() {
-    global BB_MAX_BUY_ATTEMPTS, BB_merchantState
-    FoundX := ""
-    FoundY := ""
-    if !BB_smartTemplateMatch("merchant_window", &FoundX, &FoundY) {
-        BB_merchantState := "Window Not Detected"
-        BB_updateStatusAndLog("Merchant window not detected", true)
-        return false
-    }
-    
-    searchArea := [FoundX, FoundY + 50, FoundX + 500, FoundY + 300]
-    buyCount := 0
-    while (buyCount < BB_MAX_BUY_ATTEMPTS) {
-        FoundX := ""
-        FoundY := ""
-        if BB_smartTemplateMatch("buy_button", &FoundX, &FoundY, searchArea) {
-            BB_clickAt(FoundX, FoundY)
-            BB_updateStatusAndLog("Clicked buy button " . (buyCount + 1))
-            buyCount++
-            Sleep(500)
-        } else {
-            BB_updateStatusAndLog("No more buy buttons found after " . buyCount . " purchases")
-            break
-        }
-    }
-    BB_merchantState := "Items Purchased (" . buyCount . ")"
-    return true
-}
-
-BB_enableAutomine() {
+; Enables automining in the game.
+; Parameters:
+;   hwnd: The handle of the Roblox window to interact with.
+; Returns: True if successful, False otherwise.
+BB_enableAutomine(hwnd) {
+    global BB_isAutofarming
     FoundX := ""
     FoundY := ""
     BB_updateStatusAndLog("Attempting to enable automining...")
     
     ; First, check if automining is already on
-    if BB_checkAutofarming() {
+    if BB_checkAutofarming(hwnd) {
         BB_updateStatusAndLog("Automining is already enabled")
         return true
     }
     
     ; Try to find and click the automine button
     loop 3 {  ; Retry up to 3 times
-        if BB_smartTemplateMatch("automine_button", &FoundX, &FoundY) {
+        if BB_smartTemplateMatch("automine_button", &FoundX, &FoundY, hwnd) {
             BB_clickAt(FoundX, FoundY)
             BB_updateStatusAndLog("Clicked automine button at x=" . FoundX . ", y=" . FoundY)
             Sleep(1000)
@@ -1084,7 +1078,7 @@ BB_enableAutomine() {
             
             if (isMoving) {
                 BB_updateStatusAndLog("Pixel movement detected after clicking, automining enabled successfully")
-                global BB_isAutofarming := true
+                BB_isAutofarming := true
                 return true
             } else {
                 BB_updateStatusAndLog("No pixel movement detected after clicking, retrying...")
@@ -1097,7 +1091,268 @@ BB_enableAutomine() {
     }
     
     BB_updateStatusAndLog("Failed to enable automining after 3 attempts")
-    global BB_isAutofarming := false
+    BB_isAutofarming := false
+    return false
+}
+
+; Detects emerald blocks on the screen and returns their positions.
+; Parameters:
+;   blockPositions: Output array to store the positions of detected blocks.
+;   hwnd: The handle of the Roblox window to search in.
+; Returns: True if blocks are detected, False otherwise.
+BB_detectEmeraldBlocks(&blockPositions, hwnd) {
+    global BB_TEMPLATES, BB_TEMPLATE_FOLDER
+    blockPositions := []
+    rawPositions := []
+    
+    ; Template matching
+    FoundX := ""
+    FoundY := ""
+    searchArea := [A_ScreenWidth // 4, A_ScreenHeight // 4, 3 * A_ScreenWidth // 4, 3 * A_ScreenHeight // 4]
+    if BB_smartTemplateMatch("emerald_block", &FoundX, &FoundY, hwnd, searchArea) {
+        rawPositions.Push({x: FoundX, y: FoundY})
+        BB_updateStatusAndLog("Emerald block detected via template at x=" . FoundX . ", y=" . FoundY)
+    }
+    
+    ; Color detection
+    if (rawPositions.Length == 0) {
+        BB_updateStatusAndLog("Template matching for emerald block failed, using color detection")
+        emeraldGreen := 0x00D93A
+        tolerance := 50
+        stepSize := 50
+        
+        ; Initialize x outside the loop
+        x := searchArea[1]
+        while (x <= searchArea[3]) {
+            y := searchArea[2]
+            while (y <= searchArea[4]) {
+                color := PixelGetColor(x, y, "RGB")
+                if BB_isColorSimilar(color, emeraldGreen, tolerance) {
+                    rawPositions.Push({x: x, y: y})
+                    BB_updateStatusAndLog("Emerald block detected via color at x=" . x . ", y=" . y . " (color: " . color . ")")
+                }
+                y += stepSize
+            }
+            x += stepSize
+        }
+    }
+    
+    ; Cluster nearby positions
+    clusterDistance := 50
+    while (rawPositions.Length > 0) {
+        pos := rawPositions.RemoveAt(1)
+        cluster := [pos]
+        i := 1
+        while (i <= rawPositions.Length) {
+            other := rawPositions[i]
+            distance := Sqrt((pos.x - other.x)**2 + (pos.y - other.y)**2)
+            if (distance <= clusterDistance) {
+                cluster.Push(other)
+                rawPositions.RemoveAt(i)
+            } else {
+                i++
+            }
+        }
+        ; Calculate centroid of the cluster
+        avgX := 0
+        avgY := 0
+        for p in cluster {
+            avgX += p.x
+            avgY += p.y
+        }
+        avgX := Round(avgX / cluster.Length)
+        avgY := Round(avgY / cluster.Length)
+        blockPositions.Push({x: avgX, y: avgY})
+    }
+    
+    return blockPositions.Length > 0
+}
+
+BB_isColorSimilar(color1, color2, tolerance) {
+    r1 := (color1 >> 16) & 0xFF
+    g1 := (color1 >> 8) & 0xFF
+    b1 := color1 & 0xFF
+    r2 := (color2 >> 16) & 0xFF
+    g2 := (color2 >> 8) & 0xFF
+    b2 := color2 & 0xFF
+    return (Abs(r1 - r2) <= tolerance && Abs(g1 - g2) <= tolerance && Abs(b1 - b2) <= tolerance)
+}
+
+; Opens the teleport menu in the game.
+; Parameters:
+;   hwnd: The handle of the Roblox window to interact with.
+; Returns: True if successful, False otherwise.
+BB_openTeleportMenu(hwnd) {
+    global BB_TELEPORT_HOTKEY
+    FoundX := ""
+    FoundY := ""
+    if BB_smartTemplateMatch("teleport_button", &FoundX, &FoundY, hwnd) {
+        BB_clickAt(FoundX, FoundY)
+        BB_updateStatusAndLog("Opened teleport menu")
+        Sleep(1000)
+        return true
+    }
+    SendInput("{" . BB_TELEPORT_HOTKEY . " down}")
+    Sleep(100)
+    SendInput("{" . BB_TELEPORT_HOTKEY . " up}")
+    BB_updateStatusAndLog("Failed to open teleport menu via image, used hotkey " . BB_TELEPORT_HOTKEY)
+    Sleep(1000)
+    if BB_smartTemplateMatch("area_4_button", &FoundX, &FoundY, hwnd) {
+        BB_updateStatusAndLog("Teleport menu opened successfully via hotkey")
+        return true
+    }
+    BB_updateStatusAndLog("Failed to open teleport menu", true)
+    return false
+}
+
+; Teleports to a specified area using the teleport menu.
+; Parameters:
+;   areaTemplate: The template name of the area button (e.g., "area_4_button").
+;   hwnd: The handle of the Roblox window to interact with.
+; Returns: True if successful, False otherwise.
+BB_teleportToArea(areaTemplate, hwnd) {
+    global BB_currentArea
+    FoundX := ""
+    FoundY := ""
+    if BB_smartTemplateMatch(areaTemplate, &FoundX, &FoundY, hwnd) {
+        BB_clickAt(FoundX, FoundY)
+        BB_currentArea := (areaTemplate = "area_4_button") ? "Area 4" : (areaTemplate = "area_5_button") ? "Area 5" : "Unknown"
+        BB_updateStatusAndLog("Teleported to " . BB_currentArea)
+        Sleep(2000)
+        return true
+    }
+    BB_updateStatusAndLog("Failed to teleport to " . areaTemplate, true)
+    return false
+}
+
+; Interacts with the mining merchant in Area 4.
+; Parameters:
+;   hwnd: The handle of the Roblox window to interact with.
+; Returns: True if successful, False otherwise.
+BB_interactWithMerchant(hwnd) {
+    global BB_merchantState
+    FoundX := ""
+    FoundY := ""
+    if BB_smartTemplateMatch("mining_merchant", &FoundX, &FoundY, hwnd) {
+        BB_clickAt(FoundX, FoundY)
+        BB_merchantState := "Interacted"
+        BB_updateStatusAndLog("Interacting with merchant")
+        Sleep(1000)
+        return true
+    }
+    BB_merchantState := "Failed to Interact"
+    BB_updateStatusAndLog("Failed to interact with merchant", true)
+    return false
+}
+
+; Buys items from the merchant window.
+; Parameters:
+;   hwnd: The handle of the Roblox window to interact with.
+; Returns: True if successful, False otherwise.
+BB_buyMerchantItems(hwnd) {
+    global BB_MAX_BUY_ATTEMPTS, BB_merchantState
+    FoundX := ""
+    FoundY := ""
+    if !BB_smartTemplateMatch("merchant_window", &FoundX, &FoundY, hwnd) {
+        BB_merchantState := "Window Not Detected"
+        BB_updateStatusAndLog("Merchant window not detected", true)
+        return false
+    }
+    
+    searchArea := [FoundX, FoundY + 50, FoundX + 500, FoundY + 300]
+    buyCount := 0
+    while (buyCount < BB_MAX_BUY_ATTEMPTS) {
+        FoundX := ""
+        FoundY := ""
+        if BB_smartTemplateMatch("buy_button", &FoundX, &FoundY, hwnd, searchArea) {
+            BB_clickAt(FoundX, FoundY)
+            BB_updateStatusAndLog("Clicked buy button " . (buyCount + 1))
+            buyCount++
+            Sleep(500)
+        } else {
+            BB_updateStatusAndLog("No more buy buttons found after " . buyCount . " purchases")
+            break
+        }
+    }
+    BB_merchantState := "Items Purchased (" . buyCount . ")"
+    return true
+}
+
+; Disables automining in the game.
+; Parameters:
+;   hwnd: The handle of the Roblox window to interact with.
+; Returns: True if successful, False otherwise.
+BB_disableAutomine(hwnd) {
+    global BB_isAutofarming, BB_FAILED_INTERACTION_COUNT, BB_MAX_FAILED_INTERACTIONS
+    FoundX := ""
+    FoundY := ""
+    
+    BB_updateStatusAndLog("Initiating automining disable process...")
+    
+    ; Attempt to locate and click the automine button
+    loop 5 {
+        if BB_smartTemplateMatch("automine_button", &FoundX, &FoundY, hwnd) {
+            BB_clickAt(FoundX, FoundY)
+            BB_updateStatusAndLog("Clicked automine button at x=" . FoundX . ", y=" . FoundY)
+            Sleep(2000)  ; Allow time for mining effects to stop
+            
+            ; Validate that automining has stopped using pixel movement
+            scaleX := A_ScreenWidth / 1920
+            scaleY := A_ScreenHeight / 1080
+            regions := [
+                [Round(A_ScreenWidth//3), Round(A_ScreenHeight//3)],         ; Top-left quadrant
+                [Round(2*A_ScreenWidth//3), Round(A_ScreenHeight//3)],      ; Top-right quadrant
+                [Round(A_ScreenWidth//2), Round(A_ScreenHeight//2)],         ; Center
+                [Round(A_ScreenWidth//3), Round(2*A_ScreenHeight//3)],       ; Bottom-left quadrant
+                [Round(2*A_ScreenWidth//3), Round(2*A_ScreenHeight//3)],     ; Bottom-right quadrant
+                [Round(A_ScreenWidth//4), Round(A_ScreenHeight//4)],         ; Additional points
+                [Round(3*A_ScreenWidth//4), Round(3*A_ScreenHeight//4)]
+            ]
+            
+            ; Capture initial colors after clicking
+            initialColors := []
+            for region in regions {
+                color := PixelGetColor(region[1], region[2], "RGB")
+                initialColors.Push(color)
+                BB_updateStatusAndLog("Validation point [" . region[1] . "," . region[2] . "] initial color: " . color)
+            }
+            
+            Sleep(1000)  ; Wait for effects to settle
+            changes := 0
+            threshold := 2  ; Allow minimal changes for minor animations
+            loop 3 {
+                for index, region in regions {
+                    newColor := PixelGetColor(region[1], region[2], "RGB")
+                    if (newColor != initialColors[index]) {
+                        changes++
+                        BB_updateStatusAndLog("Change at [" . region[1] . "," . region[2] . "]: " . initialColors[index] . " -> " . newColor)
+                    }
+                }
+                if (changes > threshold) {
+                    BB_updateStatusAndLog("Excessive movement detected (" . changes . " changes), retrying...")
+                    break
+                }
+                Sleep(300)
+            }
+            
+            if (changes <= threshold) {
+                BB_updateStatusAndLog("Automining disabled, minimal movement (" . changes . " changes)")
+                BB_isAutofarming := false
+                return true
+            }
+        } else {
+            BB_updateStatusAndLog("Automine button not found, attempt " . A_Index . " failed")
+        }
+        Sleep(1000)  ; Delay between attempts
+    }
+    
+    ; If the button can’t be found after all attempts, pause to avoid unintended actions
+    BB_updateStatusAndLog("Failed to find automine button after 5 attempts. Pausing to prevent unintended actions.", true, true)
+    BB_FAILED_INTERACTION_COUNT++
+    if (BB_FAILED_INTERACTION_COUNT >= BB_MAX_FAILED_INTERACTIONS) {
+        BB_updateStatusAndLog("Too many failed interactions. Stopping automation to prevent issues.", true, true)
+        BB_stopAutomation()
+    }
     return false
 }
 
@@ -1152,74 +1407,122 @@ BB_sendHotkeyWithDownUp(hotkey) {
     return true
 }
 
-BB_useBomb() {
+; Uses a bomb in the game.
+; Parameters:
+;   hwnd: The handle of the Roblox window to interact with.
+BB_useBomb(hwnd) {
     global BB_BOMB_HOTKEY, BB_lastBombStatus
     BB_sendHotkeyWithDownUp(BB_BOMB_HOTKEY)
     BB_lastBombStatus := "Used at " . A_Now
     BB_updateStatusAndLog("Used bomb with hotkey: " . BB_BOMB_HOTKEY)
-    BB_checkForError()
+    BB_checkForError(hwnd)  ; Pass hwnd here
 }
 
-BB_useTntCrate() {
+; Uses a TNT crate in the game.
+; Parameters:
+;   hwnd: The handle of the Roblox window to interact with.
+BB_useTntCrate(hwnd) {
     global BB_TNT_CRATE_HOTKEY, BB_lastTntCrateStatus
     BB_sendHotkeyWithDownUp(BB_TNT_CRATE_HOTKEY)
     BB_lastTntCrateStatus := "Used at " . A_Now
     BB_updateStatusAndLog("Used TNT crate with hotkey: " . BB_TNT_CRATE_HOTKEY)
-    BB_checkForError()
+    BB_checkForError(hwnd)  ; Pass hwnd here
 }
 
-BB_useTntBundle() {
+; Uses a TNT bundle in the game.
+; Parameters:
+;   hwnd: The handle of the Roblox window to interact with.
+BB_useTntBundle(hwnd) {
     global BB_TNT_BUNDLE_HOTKEY, BB_lastTntBundleStatus
     BB_sendHotkeyWithDownUp(BB_TNT_BUNDLE_HOTKEY)
     BB_lastTntBundleStatus := "Used at " . A_Now
     BB_updateStatusAndLog("Used TNT bundle with hotkey: " . BB_TNT_BUNDLE_HOTKEY)
-    BB_checkForError()
+    BB_checkForError(hwnd)  ; Pass hwnd here
 }
 
 BB_bombLoop() {
     global BB_running, BB_paused, BB_ENABLE_EXPLOSIVES, BB_isAutofarming
-    if (BB_running && !BB_paused && BB_ENABLE_EXPLOSIVES && BB_checkAutofarming()) {
-        BB_useBomb()
+    if (!BB_running || BB_paused || !BB_ENABLE_EXPLOSIVES) {
+        BB_updateStatusAndLog("Bomb loop skipped (not running, paused, or explosives off)")
+        return
+    }
+    
+    hwnd := WinGetID("A")
+    if (!hwnd || WinGetProcessName(hwnd) != "RobloxPlayerBeta.exe") {
+        BB_updateStatusAndLog("No Roblox window active for bomb loop", true, true)
+        return
+    }
+    
+    if (BB_checkAutofarming(hwnd)) {
+        BB_useBomb(hwnd)  ; Pass hwnd here
     } else {
-        BB_updateStatusAndLog("Bomb loop skipped (not running, paused, explosives off, or not autofarming)")
+        BB_updateStatusAndLog("Bomb loop skipped (not autofarming)")
     }
 }
 
 BB_tntCrateLoop() {
     global BB_running, BB_paused, BB_ENABLE_EXPLOSIVES, BB_isAutofarming
-    if (BB_running && !BB_paused && BB_ENABLE_EXPLOSIVES && BB_checkAutofarming()) {
-        BB_useTntCrate()
+    if (!BB_running || BB_paused || !BB_ENABLE_EXPLOSIVES) {
+        BB_updateStatusAndLog("TNT crate loop skipped (not running, paused, or explosives off)")
+        return
+    }
+    
+    hwnd := WinGetID("A")
+    if (!hwnd || WinGetProcessName(hwnd) != "RobloxPlayerBeta.exe") {
+        BB_updateStatusAndLog("No Roblox window active for TNT crate loop", true, true)
+        return
+    }
+    
+    if (BB_checkAutofarming(hwnd)) {
+        BB_useTntCrate(hwnd)  ; Pass hwnd here
     } else {
-        BB_updateStatusAndLog("TNT crate loop skipped (not running, paused, explosives off, or not autofarming)")
+        BB_updateStatusAndLog("TNT crate loop skipped (not autofarming)")
     }
 }
 
 BB_tntBundleLoop() {
     global BB_running, BB_paused, BB_ENABLE_EXPLOSIVES, BB_isAutofarming
-    if (BB_running && !BB_paused && BB_ENABLE_EXPLOSIVES && BB_checkAutofarming()) {
-        BB_useTntBundle()
+    if (!BB_running || BB_paused || !BB_ENABLE_EXPLOSIVES) {
+        BB_updateStatusAndLog("TNT bundle loop skipped (not running, paused, or explosives off)")
+        return
+    }
+    
+    hwnd := WinGetID("A")
+    if (!hwnd || WinGetProcessName(hwnd) != "RobloxPlayerBeta.exe") {
+        BB_updateStatusAndLog("No Roblox window active for TNT bundle loop", true, true)
+        return
+    }
+    
+    if (BB_checkAutofarming(hwnd)) {
+        BB_useTntBundle(hwnd)  ; Pass hwnd here
     } else {
-        BB_updateStatusAndLog("TNT bundle loop skipped (not running, paused, explosives off, or not autofarming)")
+        BB_updateStatusAndLog("TNT bundle loop skipped (not autofarming)")
     }
 }
 
+
 ; ===================== STATE MACHINE AUTOMATION LOOP =====================
 
+; State machine automation loop for mining
 BB_miningAutomationLoop() {
     global BB_running, BB_paused, BB_automationState, BB_FAILED_INTERACTION_COUNT, BB_MAX_FAILED_INTERACTIONS
     global BB_currentArea, BB_merchantState, BB_isAutofarming, BB_CYCLE_INTERVAL, BB_ENABLE_EXPLOSIVES
-
+    
+    static automineDetectionAttempts := 0
+    static MAX_AUTOMINE_DETECTION_ATTEMPTS := 5
+    static gameStateEnsured := false
+    
     if (!BB_running || BB_paused) {
         BB_updateStatusAndLog("Automation loop skipped (not running or paused)")
         return
     }
-
+    
     windows := BB_updateActiveWindows()
-    if (windows.Length = 0) {
+    if (windows.Length == 0) {
         BB_updateStatusAndLog("No Roblox windows found")
         return
     }
-
+    
     BB_updateStatusAndLog("Starting automation cycle")
     for hwnd in windows {
         if (!BB_running || BB_paused) {
@@ -1231,69 +1534,122 @@ BB_miningAutomationLoop() {
             BB_updateStatusAndLog("Skipping window due to activation failure")
             continue
         }
-
-        if BB_checkForError() {
+        Sleep(500)  ; Add a delay to ensure the window is fully activated
+        
+        if BB_checkForError(hwnd) {
             BB_setState("Error")
+            continue
         }
-
+        
         switch BB_automationState {
             case "Idle":
                 BB_currentArea := "Area 5"
-                if BB_checkAutofarming() {
+                if BB_checkAutofarming(hwnd) {
                     BB_setState("DisableAutomine")
+                    automineDetectionAttempts := 0
+                    gameStateEnsured := false
                 } else {
-                    BB_updateStatusAndLog("Autofarming not detected in Area 5, enabling it first")
-                    BB_enableAutomine()
+                    automineDetectionAttempts++
+                    BB_updateStatusAndLog("Autofarming not detected in Area 5 (attempt " . automineDetectionAttempts . "/" . MAX_AUTOMINE_DETECTION_ATTEMPTS . ")")
+                    if (automineDetectionAttempts >= MAX_AUTOMINE_DETECTION_ATTEMPTS) {
+                        BB_updateStatusAndLog("Failed to detect automine button after " . MAX_AUTOMINE_DETECTION_ATTEMPTS . " attempts, stopping automation", true, true)
+                        BB_stopAutomation()
+                        return
+                    }
+                    BB_updateStatusAndLog("Autofarming not detected, will retry in next cycle")
+                    gameStateEnsured := false
                 }
             case "DisableAutomine":
-                if BB_disableAutomine() {
+                if BB_disableAutomine(hwnd) {
                     BB_setState("TeleportToArea4")
+                    gameStateEnsured := false
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
                 }
             case "TeleportToArea4":
-                if BB_openTeleportMenu() && BB_teleportToArea("area_4_button") {
+                if BB_openTeleportMenu(hwnd) && BB_teleportToArea("area_4_button", hwnd) {
                     BB_setState("Shopping")
+                    gameStateEnsured := false
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
                 }
             case "Shopping":
-                if BB_interactWithMerchant() && BB_buyMerchantItems() {
-                    SendInput("{Esc}")
+                if BB_interactWithMerchant(hwnd) && BB_buyMerchantItems(hwnd) {
+                    SendInput("{f down}")
+                    Sleep(100)
+                    SendInput("{f up}")
                     Sleep(500)
                     BB_setState("TeleportToArea5")
+                    gameStateEnsured := false
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
                 }
             case "TeleportToArea5":
-                if BB_openTeleportMenu() && BB_teleportToArea("area_5_button") {
+                if BB_openTeleportMenu(hwnd) && BB_teleportToArea("area_5_button", hwnd) {
                     BB_setState("EnableAutomine")
+                    gameStateEnsured := false
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
                 }
             case "EnableAutomine":
-                if BB_enableAutomine() {
+                if BB_enableAutomine(hwnd) {
                     BB_setState("Mining")
+                    gameStateEnsured := false
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
                 }
             case "Mining":
                 BB_updateStatusAndLog("Mining in Area 5 for ~3 minutes")
-                Sleep(180000)
+                startTime := A_TickCount
+                while (A_TickCount - startTime < BB_CYCLE_INTERVAL) {
+                    if (!BB_running || BB_paused) {
+                        BB_updateStatusAndLog("Mining interrupted")
+                        break
+                    }
+                    if !BB_checkAutofarming(hwnd) {
+                        BB_updateStatusAndLog("Automining stopped unexpectedly, attempting to re-enable")
+                        if !BB_enableAutomine(hwnd) {
+                            BB_FAILED_INTERACTION_COUNT++
+                            BB_setState("Error")
+                            break
+                        }
+                    }
+                    blockPositions := []
+                    if BB_detectEmeraldBlocks(&blockPositions, hwnd) {
+                        BB_updateStatusAndLog("Found " . blockPositions.Length . " emerald blocks")
+                        for pos in blockPositions {
+                            BB_clickAt(pos.x, pos.y)
+                            BB_updateStatusAndLog("Clicked emerald block at x=" . pos.x . ", y=" . pos.y)
+                            Sleep(500)
+                        }
+                    }
+                    if BB_checkForError(hwnd) {
+                        BB_setState("Error")
+                        break
+                    }
+                    Sleep(5000)
+                }
                 BB_setState("Idle")
+                gameStateEnsured := false
             case "Error":
                 if (BB_FAILED_INTERACTION_COUNT >= BB_MAX_FAILED_INTERACTIONS) {
-                    BB_updateStatusAndLog("Too many failed interactions, stopping", true, true)
-                    BB_stopAutomation()
-                    return
+                    BB_updateStatusAndLog("Too many failed interactions, attempting reset", true, true)
+                    if BB_resetGameState() {
+                        BB_setState("Idle")
+                        gameStateEnsured := false
+                    } else {
+                        BB_stopAutomation()
+                    }
+                } else {
+                    BB_updateStatusAndLog("Recovering from error state, retrying")
+                    BB_setState("Idle")
+                    gameStateEnsured := false
                 }
-                BB_updateStatusAndLog("Recovering from error state")
-                BB_setState("Idle")
         }
     }
 }
@@ -1329,9 +1685,20 @@ BB_exitApp(*) {
     ExitApp()
 }
 
-BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
+; Performs a robust template match to find an image on the screen, with enhanced logic for the automine button.
+; Parameters:
+;   templateName: The name of the template (e.g., "automine_button", "autofarm_off").
+;   FoundX, FoundY: Output variables for the coordinates where the template is found.
+;   hwnd: The handle of the Roblox window to search in.
+;   searchArea: Optional array [x1, y1, x2, y2] defining the search area. If not provided, defaults are used.
+; Returns: True if the template is found, False otherwise.
+BB_smartTemplateMatch(templateName, &FoundX, &FoundY, hwnd, searchArea := "") {
     global BB_TEMPLATES, BB_TEMPLATE_FOLDER, BB_TEMPLATE_RETRIES, BB_imageCache, BB_missingTemplatesReported
     
+    ; Log the start of the template matching process
+    BB_updateStatusAndLog("Starting template match for '" . templateName . "' (hwnd: " . hwnd . ")")
+    
+    ; Verify template existence in the BB_TEMPLATES map
     if (!BB_TEMPLATES.Has(templateName)) {
         if (!BB_missingTemplatesReported.Has(templateName)) {
             BB_updateStatusAndLog("Template '" . templateName . "' not found in BB_TEMPLATES", true, true)
@@ -1340,6 +1707,7 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
         return false
     }
     
+    ; Construct the full path to the template file
     templateFile := BB_TEMPLATE_FOLDER . "\" . BB_TEMPLATES[templateName]
     if (!FileExist(templateFile)) {
         if (!BB_missingTemplatesReported.Has(templateName)) {
@@ -1349,7 +1717,8 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
         return false
     }
     
-    cacheKey := templateName . (searchArea ? StrJoin(searchArea, ",") : "")
+    ; Check if the result is cached to avoid redundant searches
+    cacheKey := templateName . (searchArea ? (searchArea[1] . "," . searchArea[2] . "," . searchArea[3] . "," . searchArea[4]) : "") . hwnd
     if (BB_imageCache.Has(cacheKey)) {
         cachedResult := BB_imageCache[cacheKey]
         if (cachedResult.success) {
@@ -1361,38 +1730,128 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
         return false
     }
     
-    if (!searchArea) {
-        if (templateName = "automine_button") {
-            ; Search a large area on the left side of the screen (based on 1920x1080 resolution)
-            searchArea := [50, 300, 250, 600]
-        } else if (templateName = "merchant_window") {
-            ; Search the center-right of the screen for the merchant window
-            searchArea := [A_ScreenWidth//2 - 200, A_ScreenHeight//2 - 200, A_ScreenWidth - 100, A_ScreenHeight//2 + 200]
-        } else if (templateName = "error_message" || templateName = "error_message_alt1" || templateName = "connection_lost") {
-            ; Search the center of the screen for error messages
-            searchArea := [A_ScreenWidth//2 - 300, A_ScreenHeight//2 - 200, A_ScreenWidth//2 + 300, A_ScreenHeight//2 + 200]
-        } else {
-            ; Default to full screen for other templates
-            searchArea := [0, 0, A_ScreenWidth, A_ScreenHeight]
-        }
+    ; Verify the window handle
+    if (!hwnd || !WinExist("ahk_id " . hwnd) || WinGetProcessName(hwnd) != "RobloxPlayerBeta.exe") {
+        BB_updateStatusAndLog("Invalid Roblox window handle for template matching: " . hwnd, true, true)
+        return false
     }
     
-    loop BB_TEMPLATE_RETRIES {
-        try {
-            BB_updateStatusAndLog("Searching for '" . templateName . "' in area [" . searchArea[1] . "," . searchArea[2] . "," . searchArea[3] . "," . searchArea[4] . "]")
-            variation := (templateName = "automine_button") ? "*150" : "*75"
-            if (ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], variation . " " . templateFile)) {
-                BB_updateStatusAndLog("Template '" . templateName . "' found at x=" . FoundX . ", y=" . FoundY)
-                BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY}
-                return true
+    ; Get the Roblox window's position and size
+    WinGetPos(&winX, &winY, &winW, &winH, "ahk_id " . hwnd)
+    BB_updateStatusAndLog("Roblox window position: x=" . winX . ", y=" . winY . ", width=" . winW . ", height=" . winH)
+    
+    ; Define search areas for the automine button, relative to the window
+    if (templateName = "automine_button" || templateName = "autofarm_off" || templateName = "autofarm_on") {
+        searchAreas := [
+            ; Bottom-left corner of the window
+            [winX, winY + winH - 400, winX + 500, winY + winH],
+            ; Entire left side of the window
+            [winX, winY, winX + 800, winY + winH],
+            ; Bottom half of the window
+            [winX, winY + (winH / 2), winX + winW, winY + winH],
+            ; Entire window
+            [winX, winY, winX + winW, winY + winH]
+        ]
+        
+        ; Define variations for image matching to handle different lighting and UI states
+        variations := [
+            "*0", "*10", "*20", "*30", "*40", "*50", "*75", "*100",  ; Even more lenient confidence levels
+            "*TransBlack", "*TransWhite",                            ; Handle transparency
+            "*Grayscale",                                            ; Handle color variations
+            "*0 *TransBlack", "*0 *TransWhite",                      ; Combine transparency with lowest confidence
+            "*0 *Grayscale"                                          ; Combine grayscale with lowest confidence
+        ]
+        
+        ; Attempt template matching in each search area with each variation
+        for area in searchAreas {
+            BB_updateStatusAndLog("Searching for '" . templateName . "' in area [" . area[1] . "," . area[2] . "," . area[3] . "," . area[4] . "]")
+            for variation in variations {
+                loop BB_TEMPLATE_RETRIES {
+                    try {
+                        if (ImageSearch(&FoundX, &FoundY, area[1], area[2], area[3], area[4], variation . " " . templateFile)) {
+                            BB_updateStatusAndLog("Template '" . templateName . "' found at x=" . FoundX . ", y=" . FoundY . " with variation '" . variation . "'")
+                            BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY}
+                            return true
+                        }
+                    } catch as err {
+                        BB_updateStatusAndLog("ImageSearch error for '" . templateName . "' with variation '" . variation . "': " . err.Message, true, true)
+                        break
+                    }
+                    Sleep(200)
+                }
             }
-        } catch as err {
-            BB_updateStatusAndLog("ImageSearch failed for '" . templateName . "': " . err.Message, true, true)
         }
-        Sleep(500)
+        
+        ; Log that template matching failed and proceed to color detection
+        BB_updateStatusAndLog("Template matching failed for '" . templateName . "' after all attempts, proceeding to color detection")
+        
+        ; Fallback: Use color detection for the red circle in "autofarm_off.png" or green circle in "autofarm_on.png"
+        if (templateName = "autofarm_off" || templateName = "autofarm_on") {
+            BB_updateStatusAndLog("Attempting color detection for " . (templateName = "autofarm_off" ? "red" : "green") . " circle")
+            targetColor := (templateName = "autofarm_off") ? 0xFF0055 : 0x00FF00  ; Red for off, green for on
+            tolerance := 15  ; Even lower tolerance for maximum sensitivity
+            stepSize := 5    ; Even smaller step size for finer search
+            
+            ; Search the entire window
+            colorSearchArea := [winX, winY, winX + winW, winY + winH]
+            BB_updateStatusAndLog("Searching for " . (templateName = "autofarm_off" ? "red" : "green") . " circle in area [" . colorSearchArea[1] . "," . colorSearchArea[2] . "," . colorSearchArea[3] . "," . colorSearchArea[4] . "]")
+            x := colorSearchArea[1]
+            while (x <= colorSearchArea[3]) {
+                y := colorSearchArea[2]
+                while (y <= colorSearchArea[4]) {
+                    try {
+                        color := PixelGetColor(x, y, "RGB")
+                        BB_updateStatusAndLog("Checking pixel at [" . x . "," . y . "]: color " . Format("0x{:06X}", color))
+                        if (BB_isColorSimilar(color, targetColor, tolerance)) {
+                            FoundX := x
+                            FoundY := y
+                            BB_updateStatusAndLog((templateName = "autofarm_off" ? "Red" : "Green") . " circle detected at x=" . FoundX . ", y=" . FoundY . " via color detection (color: " . Format("0x{:06X}", color) . ")")
+                            BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY}
+                            return true
+                        }
+                    } catch as err {
+                        BB_updateStatusAndLog("PixelGetColor error at [" . x . "," . y . "]: " . err.Message, true, true)
+                    }
+                    y += stepSize
+                }
+                x += stepSize
+            }
+            BB_updateStatusAndLog("Color detection failed to find " . (templateName = "autofarm_off" ? "red" : "green") . " circle for '" . templateName . "'")
+        }
+        
+        BB_imageCache[cacheKey] := {success: false}
+        return false
     }
     
-    BB_updateStatusAndLog("Template '" . templateName . "' not found after " . BB_TEMPLATE_RETRIES . " attempts", true)
+    ; Default search logic for other templates, also relative to the window
+    if (!searchArea) {
+        if (templateName = "merchant_window") {
+            searchArea := [winX + (winW//2) - 200, winY + (winH//2) - 200, winX + winW - 100, winY + (winH//2) + 200]
+        } else if (templateName = "error_message" || templateName = "error_message_alt1" || templateName = "connection_lost") {
+            searchArea := [winX + (winW//2) - 300, winY + (winH//2) - 200, winX + (winW//2) + 300, winY + (winH//2) + 200]
+        } else {
+            searchArea := [winX, winY, winX + winW, winY + winH]
+        }
+    }
+    
+    variations := ["*0", "*10", "*20", "*30", "*50", "*75", "*100"]
+    for variation in variations {
+        loop BB_TEMPLATE_RETRIES {
+            try {
+                if (ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], variation . " " . templateFile)) {
+                    BB_updateStatusAndLog("Template '" . templateName . "' found at x=" . FoundX . ", y=" . FoundY)
+                    BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY}
+                    return true
+                }
+            } catch as err {
+                BB_updateStatusAndLog("ImageSearch error for '" . templateName . "': " . err.Message, true, true)
+                break
+            }
+            Sleep(200)
+        }
+    }
+    
+    BB_updateStatusAndLog("Failed to find '" . templateName . "' in area [" . searchArea[1] . "," . searchArea[2] . "," . searchArea[3] . "," . searchArea[4] . "]", true)
     BB_imageCache[cacheKey] := {success: false}
     return false
 }
@@ -1404,9 +1863,11 @@ BB_loadConfig()
 BB_checkForUpdates()
 
 Hotkey("F1", BB_startAutomation)  ; Add F1 to start automation
-Hotkey(BB_BOMB_HOTKEY, (*) => BB_useBomb())
-Hotkey(BB_TNT_CRATE_HOTKEY, (*) => BB_useTntCrate())
-Hotkey(BB_TNT_BUNDLE_HOTKEY, (*) => BB_useTntBundle())
+Hotkey(BB_BOMB_HOTKEY, (*) => (hwnd := WinGetID("A"), BB_useBomb(hwnd)))
+Hotkey(BB_TNT_CRATE_HOTKEY, (*) => (hwnd := WinGetID("A"), BB_useTntCrate(hwnd)))
+Hotkey(BB_TNT_BUNDLE_HOTKEY, (*) => (hwnd := WinGetID("A"), BB_useTntBundle(hwnd)))
+SetTimer(BB_antiAfkLoop, BB_ANTI_AFK_INTERVAL)
+BB_updateStatusAndLog("Anti-AFK timer started with interval: " . BB_ANTI_AFK_INTERVAL . "ms")
 BB_updateStatusAndLog("Explosives hotkeys bound successfully")
 BB_updateStatusAndLog("Script initialized. Press F1 to start automation.")
 
