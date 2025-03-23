@@ -1,4 +1,5 @@
 #Requires AutoHotkey v2.0
+#SingleInstance Force
 ; 🐝 BeeBrained's PS99 Mining Event Automation 🐝
 ; Last Updated: March 22, 2025
 ;
@@ -13,12 +14,19 @@
 ; == Known Issues ==
 ; - Template matching may fail if the game resolution or UI scaling changes. Adjust templates or confidence levels in BB_smartTemplateMatch if needed.
 ; - Window activation may fail on some systems. Ensure Roblox is not minimized and try running the script as administrator.
-; - The script assumes the default Roblox hotkeys. Update the config if your hotkeys differ.
+; - The script assumes the default Roblox hotkeys (e.g., 't' for teleport, 'f' for automine). Update the config if your hotkeys differ.
 ; - The reconnect feature in BB_resetGameState may not work if Roblox is not set up to handle URL launches. Manual intervention may be required.
 ; - Screenshot functionality is disabled (placeholder left in BB_updateStatusAndLog for future implementation).
 
+; ===================== Run as Admin =====================
+
+if !A_IsAdmin {
+    Run("*RunAs " . A_ScriptFullPath)  ; Restart as admin if not already
+    ExitApp()
+}
+
 ; ===================== GLOBAL VARIABLES =====================
-global BB_VERSION := "1.1.1"                  ; Script version
+global BB_VERSION := "1.2.4"                  ; Script version
 global BB_running := false                    ; Script running state
 global BB_paused := false                     ; Script paused state
 global BB_automationState := "Idle"           ; State machine: Idle, DisableAutomine, GoToTop, TeleportToArea4, Shopping, TeleportToArea5, EnableAutomine, Error
@@ -189,36 +197,46 @@ BB_clearLog(*) {
 }
 
 ; ===================== UTILITY FUNCTIONS (REVISED) =====================
-
 BB_validateImage(filePath) {
-    if !FileExist(filePath)
+    if !FileExist(filePath) {
         return "File does not exist"
-    
-    ext := StrLower(SubStr(filePath, -3)) ; Extract last 3 chars (e.g., "png")
-    if (ext != "png")
-        return "Invalid extension: " . ext . " (expected png)"
-    
-    try {
-        fileSize := FileGetSize(filePath)
-        if (fileSize < 100)
-            return "File too small: " . fileSize . " bytes (minimum 100 bytes)"
-    } catch as err {
-        return "Failed to get file size: " . err.Message
     }
-    
-    ; IMPORTANT: Open in binary mode ("rb")
-    try {
-        file := FileOpen(filePath, "rb")
-        header := file.Read(8)  ; This is okay for reading raw data, but the file must be opened in binary mode
-        file.Close()
-        expectedHeader := Chr(0x89) . "PNG" . Chr(0x0D) . Chr(0x0A) . Chr(0x1A) . Chr(0x0A)
-        if (header != expectedHeader)
-            return "Invalid PNG header"
-    } catch as err {
-        return "Failed to read PNG header: " . err.Message
+    if (StrLower(SubStr(filePath, -3)) != "png") {
+        return "Invalid file extension"
     }
-    
-    return "Valid"
+    maxRetries := 3
+    retryDelay := 500
+    loop maxRetries {
+        try {
+            BB_updateStatusAndLog("Attempting to open file: " . filePath . " (retry " . A_Index . ")")
+            file := FileOpen(filePath, "rb")
+            if !IsObject(file) {
+                throw Error("Failed to create file object")
+            }
+            header := file.Read(8)
+            file.Close()
+            expectedHeader := "\x89PNG\r\n\x1a\n"
+			if (header = expectedHeader) {
+				BB_updateStatusAndLog("Validated PNG header for " . filePath)
+				return "Valid"
+			} else {
+				hexHeader := ""
+				loop 8 {
+					byte := NumGet(&header, A_Index - 1, "UChar")
+					hexHeader .= Format("{:02X} ", byte)
+				}
+				BB_updateStatusAndLog("Invalid PNG header for " . filePath . ": " . hexHeader, true)
+				return "Invalid PNG header: " . hexHeader
+			}
+        } catch as err {
+            BB_updateStatusAndLog("Validation attempt " . A_Index . " failed: " . err.Message . " (Path: " . filePath . ")", true)
+            if (A_Index < maxRetries) {
+                Sleep(retryDelay)
+                continue
+            }
+            return "Failed after " . maxRetries . " attempts: " . err.Message
+        }
+    }
 }
 
 BB_downloadTemplate(templateName, fileName) {
@@ -228,65 +246,26 @@ BB_downloadTemplate(templateName, fileName) {
     localPath := BB_TEMPLATE_FOLDER . "\" . fileName
     backupPath := BB_BACKUP_TEMPLATE_FOLDER . "\" . fileName
 
-    ; Helper function to download and verify
-    downloadWithStatus(url, dest) {
-        try {
-            if (!BB_httpDownload(url, dest)) {
-                throw Error("BB_httpDownload returned false")
-            }
-            BB_updateStatusAndLog("Downloaded " . url . " to " . dest)
-
-            ; Verify file exists
-            if (!FileExist(dest)) {
-                throw Error("File not found after download")
-            }
-
-            ; Add a delay to ensure the file is fully written and accessible
-            Sleep(200)  ; Increased from 100ms to 200ms for reliability
-
-            ; Check file size
-            fileSize := FileGetSize(dest)
-            BB_updateStatusAndLog("Downloaded file size: " . fileSize . " bytes")
-            if (fileSize < 8) {
-                throw Error("Downloaded file too small to be a PNG: " . fileSize . " bytes")
-            }
-
-            ; Read the PNG header in binary mode
-            file := FileOpen(dest, "rb")
-            if (!IsObject(file)) {
-                throw Error("Failed to open file in binary mode: " . dest)
-            }
-            headerBuffer := Buffer(8)  ; Pre-allocate a buffer for 8 bytes
-            bytesRead := file.RawRead(headerBuffer, 8)
-            file.Close()
-
-            if (bytesRead != 8) {
-                throw Error("Failed to read 8 bytes from file, read " . bytesRead . " bytes")
-            }
-
-            ; Convert header to hex for debugging
-            hexHeader := ""
-            loop 8 {
-                byte := NumGet(headerBuffer, A_Index - 1, "UChar")
-                hexHeader .= Format("{:02X} ", byte)
-            }
-            BB_updateStatusAndLog("Downloaded file header: " . hexHeader)
-
-            ; Quick validation of PNG signature
-            expectedHeader := "89 50 4E 47 0D 0A 1A 0A"  ; PNG signature in hex
-            if (hexHeader != expectedHeader) {
-                throw Error("Invalid PNG header: " . hexHeader)
-            }
-
-            return true
-        } catch as err {
-            BB_updateStatusAndLog("downloadWithStatus failed: " . err.Message, true, true)
-            if (FileExist(dest)) {
-                FileDelete(dest)  ; Clean up potentially corrupt file
-            }
-            throw err  ; Re-throw to outer catch block
-        }
-    }
+	downloadWithStatus(url, dest) {
+		try {
+			if (!BB_httpDownload(url, dest)) {
+				throw Error("Download failed")
+			}
+			Sleep(2000)  ; Wait 2 seconds for file system to settle
+			fileSize := FileGetSize(dest)
+			BB_updateStatusAndLog("Downloaded file size: " . fileSize . " bytes")
+			if (fileSize < 8) {
+				throw Error("File too small to be a PNG: " . fileSize . " bytes")
+			}
+			return true
+		} catch as err {
+			BB_updateStatusAndLog("downloadWithStatus failed: " . err.Message, true, true)
+			if (FileExist(dest)) {
+				FileDelete(dest)
+			}
+			throw err
+		}
+	}
 
     if !FileExist(localPath) {
         try {
@@ -297,7 +276,7 @@ BB_downloadTemplate(templateName, fileName) {
                 BB_validTemplates++
                 BB_updateStatusAndLog("Downloaded and validated template: " . fileName)
             } else {
-                BB_updateStatusAndLog("Template " . fileName . " validation failed: " . validationResult, true, true)
+                BB_updateStatusAndLog("Validation failed: " . validationResult, true, true)
                 FileDelete(localPath)
                 if FileExist(backupPath) {
                     FileCopy(backupPath, localPath, 1)
@@ -306,13 +285,13 @@ BB_downloadTemplate(templateName, fileName) {
                         BB_validTemplates++
                         BB_updateStatusAndLog("Using backup template for " . fileName)
                     } else {
-                        BB_updateStatusAndLog("Backup template invalid: " . validationResult, true, true)
+                        BB_updateStatusAndLog("Backup invalid: " . validationResult, true, true)
                         FileDelete(localPath)
                     }
                 }
             }
         } catch as err {
-            BB_updateStatusAndLog("Failed to download " . fileName . ": " . err.Message, true, true)
+            BB_updateStatusAndLog("Download failed: " . err.Message, true, true)
             if FileExist(backupPath) {
                 FileCopy(backupPath, localPath, 1)
                 validationResult := BB_validateImage(localPath)
@@ -320,11 +299,11 @@ BB_downloadTemplate(templateName, fileName) {
                     BB_validTemplates++
                     BB_updateStatusAndLog("Using backup template for " . fileName)
                 } else {
-                    BB_updateStatusAndLog("Backup template invalid: " . validationResult, true, true)
+                    BB_updateStatusAndLog("Backup invalid: " . validationResult, true, true)
                     FileDelete(localPath)
                 }
             } else {
-                BB_updateStatusAndLog("No backup available for " . fileName . ". Please ensure the template exists locally or at the download URL.", true, true)
+                BB_updateStatusAndLog("No backup available for " . fileName, true, true)
             }
         }
     } else {
@@ -343,79 +322,33 @@ BB_downloadTemplate(templateName, fileName) {
                     BB_validTemplates++
                     BB_updateStatusAndLog("Redownloaded and validated template: " . fileName)
                 } else {
-                    BB_updateStatusAndLog("Redownloaded template " . fileName . " still invalid: " . validationResult, true, true)
+                    BB_updateStatusAndLog("Redownloaded template invalid: " . validationResult, true, true)
                     FileDelete(localPath)
                 }
             } catch as err {
-                BB_updateStatusAndLog("Redownload failed for " . fileName . ": " . err.Message, true, true)
+                BB_updateStatusAndLog("Redownload failed: " . err.Message, true, true)
             }
         }
     }
 }
 
 BB_httpDownload(url, dest) {
-    global BB_updateStatusAndLog
-    local success := false, hr, exitCode, lastError := ""
-
-    ; Initialize COM (required for URLDownloadToFileW)
-    DllCall("ole32\CoInitialize", "Ptr", 0)  ; Initialize COM for this thread
-
-    ; **Attempt 1: Native URLDownloadToFileW (WinAPI)**
-    BB_updateStatusAndLog("Trying UrlDownloadToFileW for download: " . url)
-    try {
-        ; Ensure url and dest are valid strings
-        if (url = "" || dest = "") {
-            throw Error("Invalid URL or destination path")
-        }
-
-        ; Call URLDownloadToFileW with explicit error checking
-        hr := DllCall("urlmon\URLDownloadToFileW"
-                    , "Ptr", 0          ; pCaller = NULL
-                    , "WStr", url       ; URL to download (wide string)
-                    , "WStr", dest      ; Destination file path (wide string)
-                    , "UInt", 0         ; Reserved = 0
-                    , "Ptr", 0          ; Callback = NULL
-                    , "Int")            ; Return type as HRESULT (integer)
-        
-        ; Check HRESULT (0 = S_OK, success)
-        if (hr != 0) {
-            throw Error("URLDownloadToFileW failed with HRESULT: " . Format("0x{:08X}", hr))
-        }
-        BB_updateStatusAndLog("Download succeeded using UrlDownloadToFileW => " . dest)
-        success := true
-    } catch as err {
-        lastError := err.Message
-        BB_updateStatusAndLog("UrlDownloadToFileW failed: " . lastError, true, true)
-        if FileExist(dest) {
-            try FileDelete(dest)  ; Clean up partial download
-        }
-    }
-
-    ; Uninitialize COM
-    DllCall("ole32\CoUninitialize")
-
-    if (success) {
-        return true
-    }
-
-    ; **Attempt 2: PowerShell fallback (WebClient)**
-    BB_updateStatusAndLog("Falling back to PowerShell WebClient download for: " . url)
+    BB_updateStatusAndLog("Attempting PowerShell download for: " . url)
     psCommand := "(New-Object System.Net.WebClient).DownloadFile('" . url . "','" . dest . "')"
     try {
         exitCode := RunWait("PowerShell -NoProfile -Command " . Chr(34) . psCommand . Chr(34), , "Hide")
-        if (exitCode = 0 && FileExist(dest)) {
-            BB_updateStatusAndLog("Download succeeded using PowerShell (WebClient) => " . dest)
-            return true
-        } else {
-            lastError := (exitCode != 0) ? "PowerShell exited with code " . exitCode : "File not downloaded"
-            throw Error(lastError)
+        if (exitCode != 0 || !FileExist(dest)) {
+            throw Error("PowerShell exited with code " . exitCode . " or file not created")
         }
+        BB_updateStatusAndLog("Download succeeded using PowerShell => " . dest)
+        return true
     } catch as err {
-        BB_updateStatusAndLog("PowerShell WebClient download failed: " . err.Message, true, true)
+        BB_updateStatusAndLog("PowerShell download failed: " . err.Message, true, true)
+        if FileExist(dest) {
+            FileDelete(dest)
+        }
+        return false
     }
-
-    BB_updateStatusAndLog("Both download methods failed for " . url . "`nLast error was: " . lastError, true, true)
-    return false
 }
 
 BB_robustWindowActivation(hwnd) {
@@ -1396,6 +1329,19 @@ BB_exitApp(*) {
     SetTimer(BB_tntBundleLoop, 0)
     BB_updateStatusAndLog("Script terminated")
     ExitApp()
+}
+
+BB_testFileAccess() {
+    testPath := "C:\Apps\Automation Stuff\mining_templates\area_4_button.png"
+    if FileExist(testPath) {
+        BB_updateStatusAndLog("Testing file access for: " . testPath)
+        result := BB_validateImage(testPath)
+        BB_updateStatusAndLog("Test result: " . result)
+        MsgBox("Test result for " . testPath . ": " . result)
+    } else {
+        BB_updateStatusAndLog("Test file not found: " . testPath, true)
+        MsgBox("Please ensure " . testPath . " exists after a download attempt.")
+    }
 }
 
 ; Replace the entire initialization block at the bottom with this:
