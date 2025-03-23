@@ -26,7 +26,7 @@ if !A_IsAdmin {
 }
 
 ; ===================== GLOBAL VARIABLES =====================
-global BB_VERSION := "1.6.1"
+global BB_VERSION := "1.6.2"
 global BB_running := false
 global BB_paused := false
 global BB_lastGameStateReset := 0
@@ -229,6 +229,7 @@ BB_antiAfkLoop() {
     Sleep(100)
     SendInput("{Space up}")
     BB_updateStatusAndLog("Anti-AFK action: Jumped to prevent disconnect")
+    Sleep(500)  ; Add a delay to allow the game to process the jump
     
     ; Optional: Random movement to mimic player activity
     moveDir := Random(1, 4)
@@ -477,10 +478,22 @@ BB_clickAt(x, y) {
     delay := Random(BB_CLICK_DELAY_MIN, BB_CLICK_DELAY_MAX)
     MouseMove(x, y, 10)
     Sleep(delay)
-    Click
+
+    ; Send click down
+    Send("{LButton down}")
+    BB_updateStatusAndLog("Mouse down at x=" . x . ", y=" . y)
+    
+    ; Small delay to simulate a natural click duration (adjustable, typically 50-150ms)
+    clickDuration := Random(50, 150)
+    Sleep(clickDuration)
+    
+    ; Send click up
+    Send("{LButton up}")
+    BB_updateStatusAndLog("Mouse up at x=" . x . ", y=" . y . " after " . clickDuration . "ms")
+
     elapsed := A_TickCount - startTime
     BB_performanceData["ClickAt"] := BB_performanceData.Has("ClickAt") ? (BB_performanceData["ClickAt"] + elapsed) / 2 : elapsed
-    BB_updateStatusAndLog("Clicked at x=" . x . ", y=" . y . " (" . elapsed . "ms)")
+    BB_updateStatusAndLog("Completed click at x=" . x . ", y=" . y . " (total: " . elapsed . "ms)")
     return true
 }
 
@@ -1288,7 +1301,7 @@ BB_disableAutomine(hwnd) {
         ; Fallback to fixed coordinates if template matching fails
         WinGetPos(&winX, &winY, &winW, &winH, "ahk_id " . hwnd)
         clickX := winX + 50
-        clickY := winY + 570
+        clickY := winY + 550
         BB_clickAt(clickX, clickY)
         BB_updateStatusAndLog("Automine button not found, clicked at fixed position x=" . clickX . ", y=" . clickY . " to disable automining")
     }
@@ -1779,10 +1792,10 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, hwnd, searchArea := "") {
             return (templateName = "autofarm_on")
         }
 
-        ; Step 3: If pixel color doesn’t match, attempt a blind click and assume ON
-        BB_updateStatusAndLog("Pixel color does not match expected colors, attempting blind click at (" . expectedButtonX . "," . expectedButtonY . ")")
-        Click(expectedButtonX, expectedButtonY)
-        Sleep(1000)  ; Wait for UI to settle
+		; Step 3: If pixel color doesn’t match, attempt a blind click and assume ON
+		BB_updateStatusAndLog("Pixel color does not match expected colors, attempting blind click at (" . expectedButtonX . "," . expectedButtonY . ")")
+		BB_clickAt(expectedButtonX, expectedButtonY)
+		Sleep(1000)  ; Wait for UI to settle
 
         ; Assume autofarming is ON after the click, regardless of color change
         BB_updateStatusAndLog("Blind click performed, assuming automining is ON")
