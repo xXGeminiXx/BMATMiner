@@ -133,17 +133,31 @@ BB_setState(newState) {
 BB_updateStatusAndLog(message, updateGUI := true, isError := false, takeScreenshot := false) {
     global BB_ENABLE_LOGGING, BB_logFile, BB_myGUI, BB_isAutofarming, BB_currentArea, BB_merchantState, BB_lastError
     global BB_lastBombStatus, BB_lastTntCrateStatus, BB_lastTntBundleStatus, BB_validTemplates, BB_totalTemplates
+    static firstRun := true  ; Track if this is the first log entry of the run
+    
     if BB_ENABLE_LOGGING {
         timestamp := FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss")
         logMessage := "[" . timestamp . "] " . (isError ? "ERROR: " : "") . message . "`n"
+        
+        if firstRun {
+            try {
+                FileDelete(BB_logFile)  ; Overwrite log file on first call
+            } catch {
+                ; Ignore if file doesn't exist yet
+            }
+            firstRun := false
+        }
         FileAppend(logMessage, BB_logFile)
     }
+    
     if isError
         BB_lastError := message
+    
+    ; Placeholder for screenshot functionality (disabled as per your script)
     ; if takeScreenshot {
-    ;     ; Placeholder for screenshot functionality (GDI+ removed as per user request)
-    ;     ; BB_takeScreenshot()
+    ;     BB_takeScreenshot()
     ; }
+    
     if updateGUI && IsObject(BB_myGUI) {
         BB_myGUI["Status"].Text := (BB_running ? (BB_paused ? "Paused" : "Running") : "Idle")
         BB_myGUI["Status"].SetFont(BB_running ? (BB_paused ? "cOrange" : "cGreen") : "cRed")
@@ -163,6 +177,7 @@ BB_updateStatusAndLog(message, updateGUI := true, isError := false, takeScreensh
         BB_myGUI["LastError"].Text := BB_lastError
         BB_myGUI["LastError"].SetFont(isError ? "cRed" : "cBlack")
     }
+    
     ToolTip message, 0, 100
     SetTimer(() => ToolTip(), -3000)
 }
@@ -173,14 +188,15 @@ BB_clearLog(*) {
     BB_updateStatusAndLog("Log file cleared")
 }
 
+; ===================== UTILITY FUNCTIONS (REVISED) =====================
+
 BB_validateImage(filePath) {
     if !FileExist(filePath)
         return "File does not exist"
     
-    ; Extract the extension including the dot and convert to lowercase
-    ext := StrLower(SubStr(filePath, -4)) ; Extract last 5 characters (e.g., ".png")
-    if (ext != ".png")
-        return "Invalid extension: " . ext . " (expected .png)"
+    ext := StrLower(SubStr(filePath, -3)) ; Extract last 3 chars (e.g., "png")
+    if (ext != "png")
+        return "Invalid extension: " . ext . " (expected png)"
     
     try {
         fileSize := FileGetSize(filePath)
@@ -190,11 +206,13 @@ BB_validateImage(filePath) {
         return "Failed to get file size: " . err.Message
     }
     
+    ; IMPORTANT: Open in binary mode ("rb")
     try {
-        file := FileOpen(filePath, "r")
-        header := file.Read(8)
+        file := FileOpen(filePath, "rb")
+        header := file.Read(8)  ; This is okay for reading raw data, but the file must be opened in binary mode
         file.Close()
-        if (header != Chr(0x89) . "PNG" . Chr(0x0D) . Chr(0x0A) . Chr(0x1A) . Chr(0x0A))
+        expectedHeader := Chr(0x89) . "PNG" . Chr(0x0D) . Chr(0x0A) . Chr(0x1A) . Chr(0x0A)
+        if (header != expectedHeader)
             return "Invalid PNG header"
     } catch as err {
         return "Failed to read PNG header: " . err.Message
@@ -209,27 +227,70 @@ BB_downloadTemplate(templateName, fileName) {
     templateUrl := "https://raw.githubusercontent.com/xXGeminiXx/BMATMiner/main/mining_templates/" . fileName
     localPath := BB_TEMPLATE_FOLDER . "\" . fileName
     backupPath := BB_BACKUP_TEMPLATE_FOLDER . "\" . fileName
-    
-    ; Function to download with status code checking
+
+    ; Helper function to download and verify
     downloadWithStatus(url, dest) {
         try {
-            http := ComObject("WinHttp.WinHttpRequest.5.1")
-            http.Open("GET", url, false)
-            http.Send()
-            if (http.Status != 200) {
-                throw Error("HTTP status " . http.Status . " received")
+            if (!BB_httpDownload(url, dest)) {
+                throw Error("BB_httpDownload returned false")
             }
-            file := FileOpen(dest, "w")
-            file.RawWrite(http.ResponseBody)
+            BB_updateStatusAndLog("Downloaded " . url . " to " . dest)
+
+            ; Verify file exists
+            if (!FileExist(dest)) {
+                throw Error("File not found after download")
+            }
+
+            ; Add a delay to ensure the file is fully written and accessible
+            Sleep(200)  ; Increased from 100ms to 200ms for reliability
+
+            ; Check file size
+            fileSize := FileGetSize(dest)
+            BB_updateStatusAndLog("Downloaded file size: " . fileSize . " bytes")
+            if (fileSize < 8) {
+                throw Error("Downloaded file too small to be a PNG: " . fileSize . " bytes")
+            }
+
+            ; Read the PNG header in binary mode
+            file := FileOpen(dest, "rb")
+            if (!IsObject(file)) {
+                throw Error("Failed to open file in binary mode: " . dest)
+            }
+            headerBuffer := Buffer(8)  ; Pre-allocate a buffer for 8 bytes
+            bytesRead := file.RawRead(headerBuffer, 8)
             file.Close()
+
+            if (bytesRead != 8) {
+                throw Error("Failed to read 8 bytes from file, read " . bytesRead . " bytes")
+            }
+
+            ; Convert header to hex for debugging
+            hexHeader := ""
+            loop 8 {
+                byte := NumGet(headerBuffer, A_Index - 1, "UChar")
+                hexHeader .= Format("{:02X} ", byte)
+            }
+            BB_updateStatusAndLog("Downloaded file header: " . hexHeader)
+
+            ; Quick validation of PNG signature
+            expectedHeader := "89 50 4E 47 0D 0A 1A 0A"  ; PNG signature in hex
+            if (hexHeader != expectedHeader) {
+                throw Error("Invalid PNG header: " . hexHeader)
+            }
+
             return true
         } catch as err {
-            throw Error("Download failed: " . err.Message)
+            BB_updateStatusAndLog("downloadWithStatus failed: " . err.Message, true, true)
+            if (FileExist(dest)) {
+                FileDelete(dest)  ; Clean up potentially corrupt file
+            }
+            throw err  ; Re-throw to outer catch block
         }
     }
-    
+
     if !FileExist(localPath) {
         try {
+            BB_updateStatusAndLog("Attempting to download " . fileName . " from " . templateUrl)
             downloadWithStatus(templateUrl, localPath)
             validationResult := BB_validateImage(localPath)
             if (validationResult = "Valid") {
@@ -272,11 +333,89 @@ BB_downloadTemplate(templateName, fileName) {
             BB_validTemplates++
             BB_updateStatusAndLog("Template already exists and is valid: " . fileName)
         } else {
-            BB_updateStatusAndLog("Existing template invalid: " . validationResult . " - Redownloading", true, true)
+            BB_updateStatusAndLog("Existing template invalid: " . validationResult . " - Attempting redownload", true, true)
             FileDelete(localPath)
-            BB_downloadTemplate(templateName, fileName)  ; Recursive call to redownload
+            try {
+                BB_updateStatusAndLog("Attempting to redownload " . fileName . " from " . templateUrl)
+                downloadWithStatus(templateUrl, localPath)
+                validationResult := BB_validateImage(localPath)
+                if (validationResult = "Valid") {
+                    BB_validTemplates++
+                    BB_updateStatusAndLog("Redownloaded and validated template: " . fileName)
+                } else {
+                    BB_updateStatusAndLog("Redownloaded template " . fileName . " still invalid: " . validationResult, true, true)
+                    FileDelete(localPath)
+                }
+            } catch as err {
+                BB_updateStatusAndLog("Redownload failed for " . fileName . ": " . err.Message, true, true)
+            }
         }
     }
+}
+
+BB_httpDownload(url, dest) {
+    global BB_updateStatusAndLog
+    local success := false, hr, exitCode, lastError := ""
+
+    ; Initialize COM (required for URLDownloadToFileW)
+    DllCall("ole32\CoInitialize", "Ptr", 0)  ; Initialize COM for this thread
+
+    ; **Attempt 1: Native URLDownloadToFileW (WinAPI)**
+    BB_updateStatusAndLog("Trying UrlDownloadToFileW for download: " . url)
+    try {
+        ; Ensure url and dest are valid strings
+        if (url = "" || dest = "") {
+            throw Error("Invalid URL or destination path")
+        }
+
+        ; Call URLDownloadToFileW with explicit error checking
+        hr := DllCall("urlmon\URLDownloadToFileW"
+                    , "Ptr", 0          ; pCaller = NULL
+                    , "WStr", url       ; URL to download (wide string)
+                    , "WStr", dest      ; Destination file path (wide string)
+                    , "UInt", 0         ; Reserved = 0
+                    , "Ptr", 0          ; Callback = NULL
+                    , "Int")            ; Return type as HRESULT (integer)
+        
+        ; Check HRESULT (0 = S_OK, success)
+        if (hr != 0) {
+            throw Error("URLDownloadToFileW failed with HRESULT: " . Format("0x{:08X}", hr))
+        }
+        BB_updateStatusAndLog("Download succeeded using UrlDownloadToFileW => " . dest)
+        success := true
+    } catch as err {
+        lastError := err.Message
+        BB_updateStatusAndLog("UrlDownloadToFileW failed: " . lastError, true, true)
+        if FileExist(dest) {
+            try FileDelete(dest)  ; Clean up partial download
+        }
+    }
+
+    ; Uninitialize COM
+    DllCall("ole32\CoUninitialize")
+
+    if (success) {
+        return true
+    }
+
+    ; **Attempt 2: PowerShell fallback (WebClient)**
+    BB_updateStatusAndLog("Falling back to PowerShell WebClient download for: " . url)
+    psCommand := "(New-Object System.Net.WebClient).DownloadFile('" . url . "','" . dest . "')"
+    try {
+        exitCode := RunWait("PowerShell -NoProfile -Command " . Chr(34) . psCommand . Chr(34), , "Hide")
+        if (exitCode = 0 && FileExist(dest)) {
+            BB_updateStatusAndLog("Download succeeded using PowerShell (WebClient) => " . dest)
+            return true
+        } else {
+            lastError := (exitCode != 0) ? "PowerShell exited with code " . exitCode : "File not downloaded"
+            throw Error(lastError)
+        }
+    } catch as err {
+        BB_updateStatusAndLog("PowerShell WebClient download failed: " . err.Message, true, true)
+    }
+
+    BB_updateStatusAndLog("Both download methods failed for " . url . "`nLast error was: " . lastError, true, true)
+    return false
 }
 
 BB_robustWindowActivation(hwnd) {
@@ -355,12 +494,13 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
                 startTime := A_TickCount
                 fileSize := FileGetSize(templatePath)
                 screenRes := A_ScreenWidth . "x" . A_ScreenHeight
+                searchStr := "*" . confidence . " " . templatePath
                 if searchArea != "" {
                     BB_updateStatusAndLog("Searching for " . templateName . " in area: " . searchArea[1] . "," . searchArea[2] . " to " . searchArea[3] . "," . searchArea[4] . " (Size: " . fileSize . " bytes, Screen: " . screenRes . ")")
-                    ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], "*" . confidence . " " . templatePath)
+                    ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], searchStr)
                 } else {
                     BB_updateStatusAndLog("Searching for " . templateName . " on entire screen (Size: " . fileSize . " bytes, Screen: " . screenRes . ")")
-                    ImageSearch(&FoundX, &FoundY, 0, 0, A_ScreenWidth, A_ScreenHeight, "*" . confidence . " " . templatePath)
+                    ImageSearch(&FoundX, &FoundY, 0, 0, A_ScreenWidth, A_ScreenHeight, searchStr)
                 }
                 if (FoundX != "" && FoundY != "") {
                     elapsed := A_TickCount - startTime
@@ -370,7 +510,7 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
                     return true
                 }
             } catch as err {
-                BB_updateStatusAndLog("ImageSearch failed for " . templateName . ": " . err.Message . " (attempt " . (retryCount + 1) . ")", true, true)
+                BB_updateStatusAndLog("ImageSearch failed for " . templateName . ": " . err.Message . " with '" . searchStr . "' (attempt " . (retryCount + 1) . ")", true, true)
             }
             retryCount++
             Sleep(500)
@@ -440,25 +580,21 @@ BB_loadConfig() {
     BB_validTemplates := 0
     BB_totalTemplates := 0
 
-    ; Download templates
-    for templateName, fileName in Map(
-        "automine_button", "automine_button.png",
-        "go_to_top_button", "go_to_top_button.png",
-        "teleport_button", "teleport_button.png",
-        "area_4_button", "area_4_button.png",
-        "area_5_button", "area_5_button.png",
-        "mining_merchant", "mining_merchant.png",
-        "buy_button", "buy_button.png",
-        "merchant_window", "merchant_window.png",
-        "autofarm_on", "autofarm_on.png",
-        "autofarm_off", "autofarm_off.png",
-        "error_message", "error_message.png",
-        "error_message_alt1", "error_message_alt1.png",
-        "connection_lost", "connection_lost.png"
-    ) {
-        BB_downloadTemplate(templateName, fileName)
-        BB_TEMPLATES[templateName] := fileName
-    }
+	; Download templates
+	for templateName, fileName in Map(
+		"automine_button", "automine_button.png",
+		"go_to_top_button", "go_to_top_button.png",
+		"teleport_button", "teleport_button.png",
+		"area_4_button", "area_4_button.png",
+		"area_5_button", "area_5_button.png",
+		"mining_merchant", "mining_merchant.png",
+		"buy_button", "buy_button.png",
+		"autofarm_on", "autofarm_on.png",
+		"autofarm_off", "autofarm_off.png"
+	) {
+		BB_downloadTemplate(templateName, fileName)
+		BB_TEMPLATES[templateName] := fileName
+	}
 
     BB_updateStatusAndLog("Template validation summary: " . BB_validTemplates . "/" . BB_totalTemplates . " templates are valid")
 
@@ -808,21 +944,15 @@ BB_checkForUpdates() {
     global BB_VERSION
     versionUrl := "https://raw.githubusercontent.com/xXGeminiXx/BMATMiner/main/version.txt"
     try {
-        tempFile := A_Temp . "\bb_version.txt"
         http := ComObject("WinHttp.WinHttpRequest.5.1")
         http.Open("GET", versionUrl, false)
         http.Send()
-        if (http.Status != 200) {
+        if (http.Status != 200)
             throw Error("HTTP status " . http.Status . " received")
-        }
-        file := FileOpen(tempFile, "w")
-        file.Write(http.ResponseText)
-        file.Close()
-        latestVersion := Trim(FileRead(tempFile))
-        FileDelete(tempFile)
-        ; Validate version format (e.g., expecting something like "1.0.1")
+        latestVersion := Trim(http.ResponseText, " `t`r`n")  ; Remove leading/trailing whitespace and newlines
+        BB_updateStatusAndLog("Current version: " . BB_VERSION . " | Remote version: " . latestVersion)
         if (!RegExMatch(latestVersion, "^\d+\.\d+\.\d+$")) {
-            throw Error("Invalid version format: " . latestVersion)
+            throw Error("Invalid version format: '" . latestVersion . "'")
         }
         if (latestVersion != BB_VERSION) {
             BB_updateStatusAndLog("New version available: " . latestVersion . " (current: " . BB_VERSION . ")")
@@ -1268,20 +1398,14 @@ BB_exitApp(*) {
     ExitApp()
 }
 
-; ===================== INITIALIZATION =====================
-
+; Replace the entire initialization block at the bottom with this:
 BB_setupGUI()
 BB_loadConfig()
 BB_checkForUpdates()
 
-; Bind explosives hotkeys after functions are defined
-try {
-    Hotkey(BB_BOMB_HOTKEY, BB_useBomb)
-    Hotkey(BB_TNT_CRATE_HOTKEY, BB_useTntCrate)
-    Hotkey(BB_TNT_BUNDLE_HOTKEY, BB_useTntBundle)
-    BB_updateStatusAndLog("Explosives hotkeys bound successfully")
-} catch as err {
-    BB_updateStatusAndLog("Failed to bind explosives hotkeys: " . err.Message, true, true)
-}
+Hotkey(BB_BOMB_HOTKEY, (*) => BB_useBomb())
+Hotkey(BB_TNT_CRATE_HOTKEY, (*) => BB_useTntCrate())
+Hotkey(BB_TNT_BUNDLE_HOTKEY, (*) => BB_useTntBundle())
+BB_updateStatusAndLog("Explosives hotkeys bound successfully")
 
 TrayTip("Ready! Press F1 to start.", "🐝 BeeBrained's PS99 Mining Event Macro", 0x10)
