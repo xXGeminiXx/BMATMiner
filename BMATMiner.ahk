@@ -13,7 +13,7 @@
 ; == Known Issues ==
 ; - Template matching may fail if the game resolution or UI scaling changes. Adjust templates or confidence levels in BB_smartTemplateMatch if needed.
 ; - Window activation may fail on some systems. Ensure Roblox is not minimized and try running the script as administrator.
-; - The script assumes the default Roblox hotkeys (e.g., 't' for teleport, 'f' for automine). Update the config if your hotkeys differ.
+; - The script assumes the default Roblox hotkeys. Update the config if your hotkeys differ.
 ; - The reconnect feature in BB_resetGameState may not work if Roblox is not set up to handle URL launches. Manual intervention may be required.
 ; - Screenshot functionality is disabled (placeholder left in BB_updateStatusAndLog for future implementation).
 
