@@ -21,7 +21,6 @@ global BB_TEMPLATE_FOLDER := A_ScriptDir "\mining_templates"  ; Template images 
 global BB_WINDOW_TITLE := "Roblox"            ; Target window title
 global BB_EXCLUDED_TITLES := []               ; Titles to exclude from targeting
 global BB_TEMPLATES := Map()                  ; Map of template names to filenames
-global BB_BUY_ITEMS := []                     ; Array of buy item template names
 global BB_missingTemplatesReported := Map()   ; Tracks reported missing templates
 global BB_TEMPLATE_RETRIES := 3               ; Number of retries for template matching
 global BB_FAILED_INTERACTION_COUNT := 0       ; Count of consecutive failed interactions
@@ -34,6 +33,7 @@ global BB_myGUI := ""                         ; GUI object
 global BB_BOMB_HOTKEY := "^b"                 ; Hotkey for bombs (Ctrl+B)
 global BB_TNT_CRATE_HOTKEY := "^t"            ; Hotkey for TNT crates (Ctrl+T, placeholder)
 global BB_TNT_BUNDLE_HOTKEY := "^n"           ; Hotkey for TNT bundles (Ctrl+N, placeholder)
+global BB_MAX_BUY_ATTEMPTS := 6               ; Maximum number of buy buttons to click
 
 ; ===================== DEFAULT CONFIGURATION =====================
 
@@ -64,7 +64,8 @@ teleport_button=teleport_button.png
 area_4_button=area_4_button.png
 area_5_button=area_5_button.png
 mining_merchant=mining_merchant.png
-buy_items=buy_item_1.png,buy_item_2.png,buy_item_3.png,buy_item_4.png,buy_item_5.png
+buy_button=buy_button.png
+merchant_window=merchant_window.png
 
 [Hotkeys]
 BOMB_HOTKEY=^b
@@ -74,6 +75,7 @@ TNT_BUNDLE_HOTKEY=^n
 [Retries]
 TEMPLATE_RETRIES=3
 MAX_FAILED_INTERACTIONS=5
+MAX_BUY_ATTEMPTS=6
 
 [Logging]
 ENABLE_LOGGING=true
@@ -84,10 +86,10 @@ ENABLE_LOGGING=true
 BB_loadConfig() {
     global BB_CONFIG_FILE, BB_logFile, BB_ENABLE_LOGGING, BB_WINDOW_TITLE, BB_EXCLUDED_TITLES
     global BB_CLICK_DELAY_MIN, BB_CLICK_DELAY_MAX, BB_INTERACTION_DURATION, BB_CYCLE_INTERVAL
-    global BB_TEMPLATE_FOLDER, BB_TEMPLATES, BB_BUY_ITEMS, BB_TEMPLATE_RETRIES, BB_MAX_FAILED_INTERACTIONS
+    global BB_TEMPLATE_FOLDER, BB_TEMPLATES, BB_TEMPLATE_RETRIES, BB_MAX_FAILED_INTERACTIONS
     global BB_ANTI_AFK_INTERVAL, BB_RECONNECT_CHECK_INTERVAL, BB_BOMB_INTERVAL
     global BB_TNT_CRATE_INTERVAL, BB_TNT_BUNDLE_INTERVAL, BB_ENABLE_EXPLOSIVES
-    global BB_BOMB_HOTKEY, BB_TNT_CRATE_HOTKEY, BB_TNT_BUNDLE_HOTKEY
+    global BB_BOMB_HOTKEY, BB_TNT_CRATE_HOTKEY, BB_TNT_BUNDLE_HOTKEY, BB_MAX_BUY_ATTEMPTS
 
     if !FileExist(BB_CONFIG_FILE) {
         FileAppend(defaultIni, BB_CONFIG_FILE)
@@ -117,8 +119,8 @@ BB_loadConfig() {
     BB_TEMPLATES["area_4_button"] := IniRead(BB_CONFIG_FILE, "Templates", "area_4_button", "area_4_button.png")
     BB_TEMPLATES["area_5_button"] := IniRead(BB_CONFIG_FILE, "Templates", "area_5_button", "area_5_button.png")
     BB_TEMPLATES["mining_merchant"] := IniRead(BB_CONFIG_FILE, "Templates", "mining_merchant", "mining_merchant.png")
-    buyItemsStr := IniRead(BB_CONFIG_FILE, "Templates", "buy_items", "")
-    BB_BUY_ITEMS := StrSplit(buyItemsStr, ",")
+    BB_TEMPLATES["buy_button"] := IniRead(BB_CONFIG_FILE, "Templates", "buy_button", "buy_button.png")
+    BB_TEMPLATES["merchant_window"] := IniRead(BB_CONFIG_FILE, "Templates", "merchant_window", "merchant_window.png")
     
     BB_BOMB_HOTKEY := IniRead(BB_CONFIG_FILE, "Hotkeys", "BOMB_HOTKEY", "^b")
     BB_TNT_CRATE_HOTKEY := IniRead(BB_CONFIG_FILE, "Hotkeys", "TNT_CRATE_HOTKEY", "^t")
@@ -126,6 +128,7 @@ BB_loadConfig() {
     
     BB_TEMPLATE_RETRIES := IniRead(BB_CONFIG_FILE, "Retries", "TEMPLATE_RETRIES", 3)
     BB_MAX_FAILED_INTERACTIONS := IniRead(BB_CONFIG_FILE, "Retries", "MAX_FAILED_INTERACTIONS", 5)
+    BB_MAX_BUY_ATTEMPTS := IniRead(BB_CONFIG_FILE, "Retries", "MAX_BUY_ATTEMPTS", 6)
     
     BB_ENABLE_LOGGING := IniRead(BB_CONFIG_FILE, "Logging", "ENABLE_LOGGING", true)
 }
@@ -285,7 +288,7 @@ BB_clickAt(x, y) {
     return true
 }
 
-BB_templateMatch(templateName, &FoundX, &FoundY) {
+BB_templateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
     global BB_TEMPLATE_FOLDER, BB_TEMPLATES, BB_TEMPLATE_RETRIES, BB_missingTemplatesReported
     templatePath := BB_TEMPLATE_FOLDER "\" BB_TEMPLATES[templateName]
     if !FileExist(templatePath) {
@@ -299,7 +302,11 @@ BB_templateMatch(templateName, &FoundX, &FoundY) {
     retryCount := 0
     while (retryCount < BB_TEMPLATE_RETRIES) {
         try {
-            ImageSearch(&FoundX, &FoundY, 0, 0, A_ScreenWidth, A_ScreenHeight, "*10 " templatePath)
+            if searchArea != "" {
+                ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], "*10 " templatePath)
+            } else {
+                ImageSearch(&FoundX, &FoundY, 0, 0, A_ScreenWidth, A_ScreenHeight, "*10 " templatePath)
+            }
             if (FoundX != "" && FoundY != "") {
                 BB_updateStatusAndLog("Found " templateName " at x=" FoundX ", y=" FoundY)
                 return true
@@ -382,19 +389,33 @@ BB_interactWithMerchant() {
 }
 
 BB_buyMerchantItems() {
-    global BB_BUY_ITEMS
-    for item in BB_BUY_ITEMS {
+    global BB_MAX_BUY_ATTEMPTS
+    ; Verify merchant window is open by checking for the "Merchant!" title
+    FoundX := "", FoundY := ""
+    if !BB_templateMatch("merchant_window", &FoundX, &FoundY) {
+        BB_updateStatusAndLog("Merchant window not detected")
+        return false
+    }
+    
+    ; Define a search area around the merchant window (approximate, adjust as needed)
+    ; Using the position of the "Merchant!" title to estimate the button area
+    searchArea := [FoundX, FoundY + 50, FoundX + 500, FoundY + 300]  ; Adjust these coordinates based on your resolution
+    
+    ; Repeatedly search for green buy buttons
+    buyCount := 0
+    while (buyCount < BB_MAX_BUY_ATTEMPTS) {
         FoundX := "", FoundY := ""
-        if BB_templateMatch(item, &FoundX, &FoundY) {
-            Loop 3 {
-                BB_clickAt(FoundX, FoundY)
-                BB_updateStatusAndLog("Clicked buy button for " item)
-                Sleep(500)
-            }
+        if BB_templateMatch("buy_button", &FoundX, &FoundY, searchArea) {
+            BB_clickAt(FoundX, FoundY)
+            BB_updateStatusAndLog("Clicked buy button " (buyCount + 1))
+            buyCount++
+            Sleep(500)  ; Wait for the button to disappear after purchase
         } else {
-            BB_updateStatusAndLog("Failed to find buy button for " item)
+            BB_updateStatusAndLog("No more buy buttons found after " buyCount " purchases")
+            break
         }
     }
+    return true
 }
 
 BB_enableAutomine() {
@@ -503,7 +524,10 @@ BB_miningAutomationLoop() {
             }
 
             ; Step 6: Buy items
-            BB_buyMerchantItems()
+            if !BB_buyMerchantItems() {
+                BB_FAILED_INTERACTION_COUNT++
+                continue
+            }
 
             ; Step 7: Open teleport menu again
             if !BB_openTeleportMenu() {
