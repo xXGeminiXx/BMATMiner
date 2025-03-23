@@ -789,7 +789,7 @@ BB_checkForUpdates() {
         }
         if (latestVersion != BB_VERSION) {
             BB_updateStatusAndLog("New version available: " . latestVersion . " (current: " . BB_VERSION . ")")
-            MsgBox("A new version (" . latestVersion . ") is available! Please update the script.", "Update Available", 0x40)
+            ;MsgBox("A new version (" . latestVersion . ") is available! Please update the script.", "Update Available", 0x40)
         } else {
             BB_updateStatusAndLog("Script is up to date (version: " . BB_VERSION . ")")
         }
