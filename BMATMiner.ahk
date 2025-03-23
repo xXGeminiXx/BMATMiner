@@ -1,9 +1,24 @@
 #Requires AutoHotkey v2.0
 ; 🐝 BeeBrained's PS99 Mining Event Automation 🐝
 ; Last Updated: March 22, 2025
+;
+; == Testing Instructions ==
+; 1. Ensure Roblox and Pet Simulator 99 are installed and running.
+; 2. Place the script in a folder with write permissions (e.g., C:\Apps\Automation Stuff).
+; 3. Run the script as administrator to ensure proper window activation.
+; 4. Press F1 to start the automation. Use F2 to stop, P to pause/resume, F3 to toggle explosives, and Esc to exit.
+; 5. Monitor the GUI and log file (mining_log.txt) for errors.
+; 6. If templates fail to validate, ensure an internet connection and check the GitHub repository for the latest template files.
+;
+; == Known Issues ==
+; - Template matching may fail if the game resolution or UI scaling changes. Adjust templates or confidence levels in BB_smartTemplateMatch if needed.
+; - Window activation may fail on some systems. Ensure Roblox is not minimized and try running the script as administrator.
+; - The script assumes the default Roblox hotkeys (e.g., 't' for teleport, 'f' for automine). Update the config if your hotkeys differ.
+; - The reconnect feature in BB_resetGameState may not work if Roblox is not set up to handle URL launches. Manual intervention may be required.
+; - Screenshot functionality is disabled (placeholder left in BB_updateStatusAndLog for future implementation).
 
 ; ===================== GLOBAL VARIABLES =====================
-
+global BB_VERSION := "1.1.1"                  ; Script version
 global BB_running := false                    ; Script running state
 global BB_paused := false                     ; Script paused state
 global BB_automationState := "Idle"           ; State machine: Idle, DisableAutomine, GoToTop, TeleportToArea4, Shopping, TeleportToArea5, EnableAutomine, Error
@@ -19,12 +34,11 @@ global BB_TNT_BUNDLE_INTERVAL := 15000        ; TNT bundle usage interval (ms)
 global BB_logFile := A_ScriptDir "\mining_log.txt"  ; Log file path
 global BB_CONFIG_FILE := A_ScriptDir "\mining_config.ini"  ; Config file path
 global BB_ENABLE_LOGGING := true              ; Logging toggle
-global BB_TEMPLATE_FOLDER := A_Temp "\BB_MiningTemplates"  ; Temporary folder for downloaded templates
+global BB_TEMPLATE_FOLDER := A_ScriptDir "\mining_templates"  ; Use script directory with mining_templates subfolder
 global BB_BACKUP_TEMPLATE_FOLDER := A_ScriptDir "\backup_templates"  ; Backup folder for templates
 global BB_WINDOW_TITLE := "Pet Simulator 99"  ; Updated to match likely window title
 global BB_EXCLUDED_TITLES := []               ; Titles to exclude from targeting
 global BB_TEMPLATES := Map()                  ; Map of template names to filenames
-global BB_TEMPLATE_HASHES := Map()            ; For hash verification
 global BB_missingTemplatesReported := Map()   ; Tracks reported missing templates
 global BB_TEMPLATE_RETRIES := 3               ; Number of retries for template matching
 global BB_FAILED_INTERACTION_COUNT := 0       ; Count of consecutive failed interactions
@@ -37,6 +51,7 @@ global BB_myGUI := ""                         ; GUI object
 global BB_BOMB_HOTKEY := "^b"                 ; Hotkey for bombs (Ctrl+B)
 global BB_TNT_CRATE_HOTKEY := "^t"            ; Hotkey for TNT crates (Ctrl+T)
 global BB_TNT_BUNDLE_HOTKEY := "^n"           ; Hotkey for TNT bundles (Ctrl+N)
+global BB_TELEPORT_HOTKEY := "t"              ; Hotkey for teleport menu
 global BB_MAX_BUY_ATTEMPTS := 6               ; Maximum number of buy buttons to click
 global BB_isAutofarming := false              ; Tracks autofarm state
 global BB_lastBombStatus := "Idle"            ; Tracks last bomb usage
@@ -112,7 +127,7 @@ BB_setState(newState) {
     if (BB_stateHistory.Length > 10)
         BB_stateHistory.RemoveAt(1)
     BB_automationState := newState
-    BB_updateStatusAndLog("State changed: " newState)
+    BB_updateStatusAndLog("State changed: " . newState)
 }
 
 BB_updateStatusAndLog(message, updateGUI := true, isError := false, takeScreenshot := false) {
@@ -120,15 +135,15 @@ BB_updateStatusAndLog(message, updateGUI := true, isError := false, takeScreensh
     global BB_lastBombStatus, BB_lastTntCrateStatus, BB_lastTntBundleStatus, BB_validTemplates, BB_totalTemplates
     if BB_ENABLE_LOGGING {
         timestamp := FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss")
-        logMessage := "[" timestamp "] " (isError ? "ERROR: " : "") message "`n"
+        logMessage := "[" . timestamp . "] " . (isError ? "ERROR: " : "") . message . "`n"
         FileAppend(logMessage, BB_logFile)
     }
     if isError
         BB_lastError := message
-    if takeScreenshot {
-        ; Placeholder for screenshot functionality
-        ; BB_takeScreenshot()
-    }
+    ; if takeScreenshot {
+    ;     ; Placeholder for screenshot functionality (GDI+ removed as per user request)
+    ;     ; BB_takeScreenshot()
+    ; }
     if updateGUI && IsObject(BB_myGUI) {
         BB_myGUI["Status"].Text := (BB_running ? (BB_paused ? "Paused" : "Running") : "Idle")
         BB_myGUI["Status"].SetFont(BB_running ? (BB_paused ? "cOrange" : "cGreen") : "cRed")
@@ -137,7 +152,7 @@ BB_updateStatusAndLog(message, updateGUI := true, isError := false, takeScreensh
         BB_myGUI["AutofarmStatus"].SetFont(BB_isAutofarming ? "cGreen" : "cRed")
         BB_myGUI["ExplosivesStatus"].Text := (BB_ENABLE_EXPLOSIVES ? "ON" : "OFF")
         BB_myGUI["ExplosivesStatus"].SetFont(BB_ENABLE_EXPLOSIVES ? "cGreen" : "cRed")
-        BB_myGUI["TemplateStatus"].Text := BB_validTemplates "/" BB_totalTemplates
+        BB_myGUI["TemplateStatus"].Text := BB_validTemplates . "/" . BB_totalTemplates
         BB_myGUI["TemplateStatus"].SetFont(BB_validTemplates = BB_totalTemplates ? "cGreen" : "cRed")
         BB_myGUI["CurrentArea"].Text := BB_currentArea
         BB_myGUI["MerchantState"].Text := BB_merchantState
@@ -161,124 +176,103 @@ BB_clearLog(*) {
 BB_validateImage(filePath) {
     if !FileExist(filePath)
         return "File does not exist"
-    ext := StrLower(SubStr(filePath, -3))
+    
+    ; Extract the extension including the dot and convert to lowercase
+    ext := StrLower(SubStr(filePath, -4)) ; Extract last 5 characters (e.g., ".png")
     if (ext != ".png")
-        return "Invalid extension: " ext " (expected .png)"
+        return "Invalid extension: " . ext . " (expected .png)"
+    
     try {
         fileSize := FileGetSize(filePath)
         if (fileSize < 100)
-            return "File too small: " fileSize " bytes (minimum 100 bytes)"
+            return "File too small: " . fileSize . " bytes (minimum 100 bytes)"
     } catch as err {
-        return "Failed to get file size: " err.Message
+        return "Failed to get file size: " . err.Message
     }
+    
     try {
         file := FileOpen(filePath, "r")
         header := file.Read(8)
         file.Close()
-        if (header != Chr(0x89) "PNG" Chr(0x0D) Chr(0x0A) Chr(0x1A) Chr(0x0A))
+        if (header != Chr(0x89) . "PNG" . Chr(0x0D) . Chr(0x0A) . Chr(0x1A) . Chr(0x0A))
             return "Invalid PNG header"
     } catch as err {
-        return "Failed to read PNG header: " err.Message
+        return "Failed to read PNG header: " . err.Message
     }
+    
     return "Valid"
 }
 
-BB_calculateFileHash(filePath) {
-    ; Placeholder for MD5/SHA1 hash calculation
-    return "placeholder_hash"
-}
-
 BB_downloadTemplate(templateName, fileName) {
-    global BB_TEMPLATE_FOLDER, BB_BACKUP_TEMPLATE_FOLDER, BB_TEMPLATE_HASHES, BB_validTemplates, BB_totalTemplates
+    global BB_TEMPLATE_FOLDER, BB_BACKUP_TEMPLATE_FOLDER, BB_validTemplates, BB_totalTemplates
     BB_totalTemplates++
-    templateUrl := "https://raw.githubusercontent.com/xXGeminiXx/BMATMiner/main/mining_templates/" fileName
-    localPath := BB_TEMPLATE_FOLDER "\" fileName
-    backupPath := BB_BACKUP_TEMPLATE_FOLDER "\" fileName
+    templateUrl := "https://raw.githubusercontent.com/xXGeminiXx/BMATMiner/main/mining_templates/" . fileName
+    localPath := BB_TEMPLATE_FOLDER . "\" . fileName
+    backupPath := BB_BACKUP_TEMPLATE_FOLDER . "\" . fileName
+    
+    ; Function to download with status code checking
+    downloadWithStatus(url, dest) {
+        try {
+            http := ComObject("WinHttp.WinHttpRequest.5.1")
+            http.Open("GET", url, false)
+            http.Send()
+            if (http.Status != 200) {
+                throw Error("HTTP status " . http.Status . " received")
+            }
+            file := FileOpen(dest, "w")
+            file.RawWrite(http.ResponseBody)
+            file.Close()
+            return true
+        } catch as err {
+            throw Error("Download failed: " . err.Message)
+        }
+    }
+    
     if !FileExist(localPath) {
         try {
-            Download(templateUrl, localPath)
+            downloadWithStatus(templateUrl, localPath)
             validationResult := BB_validateImage(localPath)
             if (validationResult = "Valid") {
-                if BB_TEMPLATE_HASHES.Has(templateName) {
-                    calculatedHash := BB_calculateFileHash(localPath)
-                    if (calculatedHash != BB_TEMPLATE_HASHES[templateName]) {
-                        BB_updateStatusAndLog("Hash mismatch for " fileName ", using backup", true, true)
-                        if FileExist(backupPath) {
-                            FileCopy(backupPath, localPath, 1)
-                            validationResult := BB_validateImage(localPath)
-                            if (validationResult = "Valid") {
-                                BB_validTemplates++
-                                BB_updateStatusAndLog("Using backup template for " fileName)
-                            } else {
-                                BB_updateStatusAndLog("Backup template invalid: " validationResult, true, true)
-                                FileDelete(localPath)
-                            }
-                        }
-                    } else {
-                        BB_validTemplates++
-                        BB_updateStatusAndLog("Downloaded and validated template: " fileName)
-                    }
-                } else {
-                    BB_validTemplates++
-                    BB_updateStatusAndLog("Downloaded and validated template: " fileName)
-                }
+                BB_validTemplates++
+                BB_updateStatusAndLog("Downloaded and validated template: " . fileName)
             } else {
-                BB_updateStatusAndLog("Template " fileName " validation failed: " validationResult, true, true)
+                BB_updateStatusAndLog("Template " . fileName . " validation failed: " . validationResult, true, true)
                 FileDelete(localPath)
                 if FileExist(backupPath) {
                     FileCopy(backupPath, localPath, 1)
                     validationResult := BB_validateImage(localPath)
                     if (validationResult = "Valid") {
                         BB_validTemplates++
-                        BB_updateStatusAndLog("Using backup template for " fileName)
+                        BB_updateStatusAndLog("Using backup template for " . fileName)
                     } else {
-                        BB_updateStatusAndLog("Backup template invalid: " validationResult, true, true)
+                        BB_updateStatusAndLog("Backup template invalid: " . validationResult, true, true)
                         FileDelete(localPath)
                     }
                 }
             }
         } catch as err {
-            BB_updateStatusAndLog("Failed to download " fileName ": " err.Message, true, true)
+            BB_updateStatusAndLog("Failed to download " . fileName . ": " . err.Message, true, true)
             if FileExist(backupPath) {
                 FileCopy(backupPath, localPath, 1)
                 validationResult := BB_validateImage(localPath)
                 if (validationResult = "Valid") {
                     BB_validTemplates++
-                    BB_updateStatusAndLog("Using backup template for " fileName)
+                    BB_updateStatusAndLog("Using backup template for " . fileName)
                 } else {
-                    BB_updateStatusAndLog("Backup template invalid: " validationResult, true, true)
+                    BB_updateStatusAndLog("Backup template invalid: " . validationResult, true, true)
                     FileDelete(localPath)
                 }
+            } else {
+                BB_updateStatusAndLog("No backup available for " . fileName . ". Please ensure the template exists locally or at the download URL.", true, true)
             }
         }
     } else {
         validationResult := BB_validateImage(localPath)
         if (validationResult = "Valid") {
-            if BB_TEMPLATE_HASHES.Has(templateName) {
-                calculatedHash := BB_calculateFileHash(localPath)
-                if (calculatedHash != BB_TEMPLATE_HASHES[templateName]) {
-                    BB_updateStatusAndLog("Hash mismatch for existing " fileName ", using backup", true, true)
-                    if FileExist(backupPath) {
-                        FileCopy(backupPath, localPath, 1)
-                        validationResult := BB_validateImage(localPath)
-                        if (validationResult = "Valid") {
-                            BB_validTemplates++
-                            BB_updateStatusAndLog("Using backup template for " fileName)
-                        } else {
-                            BB_updateStatusAndLog("Backup template invalid: " validationResult, true, true)
-                            FileDelete(localPath)
-                        }
-                    }
-                } else {
-                    BB_validTemplates++
-                    BB_updateStatusAndLog("Template already exists and is valid: " fileName)
-                }
-            } else {
-                BB_validTemplates++
-                BB_updateStatusAndLog("Template already exists and is valid: " fileName)
-            }
+            BB_validTemplates++
+            BB_updateStatusAndLog("Template already exists and is valid: " . fileName)
         } else {
-            BB_updateStatusAndLog("Existing template invalid: " validationResult " - Redownloading", true, true)
+            BB_updateStatusAndLog("Existing template invalid: " . validationResult . " - Redownloading", true, true)
             FileDelete(localPath)
             BB_downloadTemplate(templateName, fileName)  ; Recursive call to redownload
         }
@@ -295,14 +289,14 @@ BB_robustWindowActivation(hwnd) {
         try {
             startTime := A_TickCount
             method.fn()
-            if WinWaitActive("ahk_id " hwnd, , 2) {
+            if WinWaitActive("ahk_id " . hwnd, , 2) {
                 elapsed := A_TickCount - startTime
                 BB_performanceData[method.name] := BB_performanceData.Has(method.name) ? (BB_performanceData[method.name] + elapsed) / 2 : elapsed
-                BB_updateStatusAndLog("Window activated using " method.name " (" elapsed "ms)")
+                BB_updateStatusAndLog("Window activated using " . method.name . " (" . elapsed . "ms)")
                 return true
             }
         } catch as err {
-            BB_updateStatusAndLog("Activation method failed: " method.name " - " err.Message, true)
+            BB_updateStatusAndLog("Activation method failed: " . method.name . " - " . err.Message, true)
             Sleep(500)
             continue
         }
@@ -315,12 +309,12 @@ BB_clickAt(x, y) {
     global BB_CLICK_DELAY_MIN, BB_CLICK_DELAY_MAX, BB_performanceData
     hwnd := WinGetID("A")
     if (!hwnd || WinGetProcessName(hwnd) != "RobloxPlayerBeta.exe") {
-        BB_updateStatusAndLog("No Roblox window active for clicking at x=" x ", y=" y, true)
+        BB_updateStatusAndLog("No Roblox window active for clicking at x=" . x . ", y=" . y, true)
         return false
     }
     WinGetPos(&winX, &winY, &winW, &winH, hwnd)
     if (x < winX || x > winX + winW || y < winY || y > winY + winH) {
-        BB_updateStatusAndLog("Click coordinates x=" x ", y=" y " are outside window", true)
+        BB_updateStatusAndLog("Click coordinates x=" . x . ", y=" . y . " are outside window", true)
         return false
     }
     startTime := A_TickCount
@@ -330,25 +324,25 @@ BB_clickAt(x, y) {
     Click
     elapsed := A_TickCount - startTime
     BB_performanceData["ClickAt"] := BB_performanceData.Has("ClickAt") ? (BB_performanceData["ClickAt"] + elapsed) / 2 : elapsed
-    BB_updateStatusAndLog("Clicked at x=" x ", y=" y " (" elapsed "ms)")
+    BB_updateStatusAndLog("Clicked at x=" . x . ", y=" . y . " (" . elapsed . "ms)")
     return true
 }
 
 BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
     global BB_TEMPLATE_FOLDER, BB_TEMPLATES, BB_TEMPLATE_RETRIES, BB_missingTemplatesReported, BB_imageCache, BB_performanceData
-    cacheKey := templateName (searchArea ? "_" StrJoin(searchArea, "_") : "")
+    cacheKey := templateName . (searchArea ? "_" . StrJoin(searchArea, "_") : "")
     if BB_imageCache.Has(cacheKey) {
         coords := BB_imageCache[cacheKey]
         FoundX := coords.x
         FoundY := coords.y
-        BB_updateStatusAndLog("Used cached coordinates for " templateName)
+        BB_updateStatusAndLog("Used cached coordinates for " . templateName)
         return true
     }
-    templatePath := BB_TEMPLATE_FOLDER "\" BB_TEMPLATES[templateName]
+    templatePath := BB_TEMPLATE_FOLDER . "\" . BB_TEMPLATES[templateName]
     validationResult := BB_validateImage(templatePath)
     if (validationResult != "Valid") {
         if !BB_missingTemplatesReported.Has(templateName) {
-            BB_updateStatusAndLog("Template validation failed for " templateName ": " validationResult " (Path: " templatePath ")", true, true)
+            BB_updateStatusAndLog("Template validation failed for " . templateName . ": " . validationResult . " (Path: " . templatePath . ")", true, true)
             BB_missingTemplatesReported[templateName] := true
         }
         return false
@@ -360,63 +354,63 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
             try {
                 startTime := A_TickCount
                 fileSize := FileGetSize(templatePath)
-                screenRes := A_ScreenWidth "x" A_ScreenHeight
+                screenRes := A_ScreenWidth . "x" . A_ScreenHeight
                 if searchArea != "" {
-                    BB_updateStatusAndLog("Searching for " templateName " in area: " searchArea[1] "," searchArea[2] " to " searchArea[3] "," searchArea[4] " (Size: " fileSize " bytes, Screen: " screenRes ")")
-                    ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], "*" confidence " " templatePath)
+                    BB_updateStatusAndLog("Searching for " . templateName . " in area: " . searchArea[1] . "," . searchArea[2] . " to " . searchArea[3] . "," . searchArea[4] . " (Size: " . fileSize . " bytes, Screen: " . screenRes . ")")
+                    ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], "*" . confidence . " " . templatePath)
                 } else {
-                    BB_updateStatusAndLog("Searching for " templateName " on entire screen (Size: " fileSize " bytes, Screen: " screenRes ")")
-                    ImageSearch(&FoundX, &FoundY, 0, 0, A_ScreenWidth, A_ScreenHeight, "*" confidence " " templatePath)
+                    BB_updateStatusAndLog("Searching for " . templateName . " on entire screen (Size: " . fileSize . " bytes, Screen: " . screenRes . ")")
+                    ImageSearch(&FoundX, &FoundY, 0, 0, A_ScreenWidth, A_ScreenHeight, "*" . confidence . " " . templatePath)
                 }
                 if (FoundX != "" && FoundY != "") {
                     elapsed := A_TickCount - startTime
-                    BB_performanceData["ImageSearch_" templateName] := BB_performanceData.Has("ImageSearch_" templateName) ? (BB_performanceData["ImageSearch_" templateName] + elapsed) / 2 : elapsed
+                    BB_performanceData["ImageSearch_" . templateName] := BB_performanceData.Has("ImageSearch_" . templateName) ? (BB_performanceData["ImageSearch_" . templateName] + elapsed) / 2 : elapsed
                     BB_imageCache[cacheKey] := {x: FoundX, y: FoundY}
-                    BB_updateStatusAndLog("Found " templateName " at x=" FoundX ", y=" FoundY " with confidence " confidence " (attempt " (retryCount + 1) ", " elapsed "ms)")
+                    BB_updateStatusAndLog("Found " . templateName . " at x=" . FoundX . ", y=" . FoundY . " with confidence " . confidence . " (attempt " . (retryCount + 1) . ", " . elapsed . "ms)")
                     return true
                 }
             } catch as err {
-                BB_updateStatusAndLog("ImageSearch failed for " templateName ": " err.Message " (attempt " (retryCount + 1) ")", true, true)
+                BB_updateStatusAndLog("ImageSearch failed for " . templateName . ": " . err.Message . " (attempt " . (retryCount + 1) . ")", true, true)
             }
             retryCount++
             Sleep(500)
         }
     }
-    variantNames := [templateName "_alt1", templateName "_alt2"]
+    variantNames := [templateName . "_alt1", templateName . "_alt2"]
     for variant in variantNames {
         if BB_TEMPLATES.Has(variant) {
             retryCount := 0
             while (retryCount < BB_TEMPLATE_RETRIES) {
                 try {
                     startTime := A_TickCount
-                    templatePath := BB_TEMPLATE_FOLDER "\" BB_TEMPLATES[variant]
+                    templatePath := BB_TEMPLATE_FOLDER . "\" . BB_TEMPLATES[variant]
                     if searchArea != ""
-                        ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], "*20 " templatePath)
+                        ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], "*20 " . templatePath)
                     else
-                        ImageSearch(&FoundX, &FoundY, 0, 0, A_ScreenWidth, A_ScreenHeight, "*20 " templatePath)
+                        ImageSearch(&FoundX, &FoundY, 0, 0, A_ScreenWidth, A_ScreenHeight, "*20 " . templatePath)
                     if (FoundX != "" && FoundY != "") {
                         elapsed := A_TickCount - startTime
-                        BB_performanceData["ImageSearch_" variant] := BB_performanceData.Has("ImageSearch_" variant) ? (BB_performanceData["ImageSearch_" variant] + elapsed) / 2 : elapsed
+                        BB_performanceData["ImageSearch_" . variant] := BB_performanceData.Has("ImageSearch_" . variant) ? (BB_performanceData["ImageSearch_" . variant] + elapsed) / 2 : elapsed
                         BB_imageCache[cacheKey] := {x: FoundX, y: FoundY}
-                        BB_updateStatusAndLog("Found " templateName " using variant " variant " at x=" FoundX ", y=" FoundY " (attempt " (retryCount + 1) ", " elapsed "ms)")
+                        BB_updateStatusAndLog("Found " . templateName . " using variant " . variant . " at x=" . FoundX . ", y=" . FoundY . " (attempt " . (retryCount + 1) . ", " . elapsed . "ms)")
                         return true
                     }
                 } catch as err {
-                    BB_updateStatusAndLog("ImageSearch failed for variant " variant ": " err.Message " (attempt " (retryCount + 1) ")", true, true)
+                    BB_updateStatusAndLog("ImageSearch failed for variant " . variant . ": " . err.Message . " (attempt " . (retryCount + 1) . ")", true, true)
                 }
                 retryCount++
                 Sleep(500)
             }
         }
     }
-    BB_updateStatusAndLog("Failed to find " templateName " after " BB_TEMPLATE_RETRIES " retries", true, true)
+    BB_updateStatusAndLog("Failed to find " . templateName . " after " . BB_TEMPLATE_RETRIES . " retries", true, true)
     return false
 }
 
 StrJoin(arr, delimiter) {
     result := ""
     for i, value in arr
-        result .= (i > 1 ? delimiter : "") value
+        result .= (i > 1 ? delimiter : "") . value
     return result
 }
 
@@ -425,7 +419,7 @@ StrJoin(arr, delimiter) {
 BB_loadConfig() {
     global BB_CONFIG_FILE, BB_logFile, BB_ENABLE_LOGGING, BB_WINDOW_TITLE, BB_EXCLUDED_TITLES
     global BB_CLICK_DELAY_MIN, BB_CLICK_DELAY_MAX, BB_INTERACTION_DURATION, BB_CYCLE_INTERVAL
-    global BB_TEMPLATE_FOLDER, BB_BACKUP_TEMPLATE_FOLDER, BB_TEMPLATES, BB_TEMPLATE_HASHES, BB_TEMPLATE_RETRIES, BB_MAX_FAILED_INTERACTIONS
+    global BB_TEMPLATE_FOLDER, BB_BACKUP_TEMPLATE_FOLDER, BB_TEMPLATES, BB_TEMPLATE_RETRIES, BB_MAX_FAILED_INTERACTIONS
     global BB_ANTI_AFK_INTERVAL, BB_RECONNECT_CHECK_INTERVAL, BB_BOMB_INTERVAL
     global BB_TNT_CRATE_INTERVAL, BB_TNT_BUNDLE_INTERVAL, BB_ENABLE_EXPLOSIVES, BB_SAFE_MODE
     global BB_BOMB_HOTKEY, BB_TNT_CRATE_HOTKEY, BB_TNT_BUNDLE_HOTKEY, BB_TELEPORT_HOTKEY, BB_MAX_BUY_ATTEMPTS
@@ -466,7 +460,7 @@ BB_loadConfig() {
         BB_TEMPLATES[templateName] := fileName
     }
 
-    BB_updateStatusAndLog("Template validation summary: " BB_validTemplates "/" BB_totalTemplates " templates are valid")
+    BB_updateStatusAndLog("Template validation summary: " . BB_validTemplates . "/" . BB_totalTemplates . " templates are valid")
 
     ; Load other settings
     BB_INTERACTION_DURATION := IniRead(BB_CONFIG_FILE, "Timing", "INTERACTION_DURATION", 5000)
@@ -484,7 +478,9 @@ BB_loadConfig() {
         avgClickTime := BB_performanceData["ClickAt"]
         BB_CLICK_DELAY_MIN := Max(500, avgClickTime - 100)
         BB_CLICK_DELAY_MAX := Max(1500, avgClickTime + 100)
-        BB_updateStatusAndLog("Adjusted click delays: Min=" BB_CLICK_DELAY_MIN ", Max=" BB_CLICK_DELAY_MAX " based on performance")
+        BB_updateStatusAndLog("Adjusted click delays: Min=" . BB_CLICK_DELAY_MIN . ", Max=" . BB_CLICK_DELAY_MAX . " based on performance")
+    } else {
+        BB_updateStatusAndLog("No performance data available, using default click delays: Min=" . BB_CLICK_DELAY_MIN . ", Max=" . BB_CLICK_DELAY_MAX)
     }
 
     BB_WINDOW_TITLE := IniRead(BB_CONFIG_FILE, "Window", "WINDOW_TITLE", "Pet Simulator 99")
@@ -504,33 +500,20 @@ BB_loadConfig() {
     BB_MAX_BUY_ATTEMPTS := IniRead(BB_CONFIG_FILE, "Retries", "MAX_BUY_ATTEMPTS", 6)
 
     BB_ENABLE_LOGGING := IniRead(BB_CONFIG_FILE, "Logging", "ENABLE_LOGGING", true)
-
-    ; Placeholder hashes (replace with actual values)
-    BB_TEMPLATE_HASHES["automine_button"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["go_to_top_button"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["teleport_button"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["area_4_button"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["area_5_button"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["mining_merchant"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["buy_button"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["merchant_window"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["autofarm_on"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["autofarm_off"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["error_message"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["error_message_alt1"] := "placeholder_hash"
-    BB_TEMPLATE_HASHES["connection_lost"] := "placeholder_hash"
 }
 
 ; ===================== GUI SETUP =====================
 
 BB_setupGUI() {
-    global BB_myGUI
-    BB_myGUI := Gui("+AlwaysOnTop", "🐝 BeeBrained’s PS99 Mining Event Macro 🐝")
+    global BB_myGUI, BB_BOMB_HOTKEY, BB_TNT_CRATE_HOTKEY, BB_TNT_BUNDLE_HOTKEY, BB_VERSION
+    BB_myGUI := Gui("+AlwaysOnTop", "🐝 BeeBrained’s PS99 Mining Event Macro v" . BB_VERSION . " 🐝")
     BB_myGUI.OnEvent("Close", BB_exitApp)
     
     ; Header
-    BB_myGUI.Add("Text", "x10 y10 w400 h20 Center", "🐝 BeeBrained’s PS99 Mining Event Macro 🐝")
-    BB_myGUI.Add("Text", "x10 y30 w400 h20 Center", "Hotkeys: F1 (Start) | F2 (Stop) | P (Pause) | F3 (Explosives) | Esc (Exit)")
+    BB_myGUI.Add("Text", "x10 y10 w400 h20 Center", "🐝 BeeBrained’s PS99 Mining Event Macro v" . BB_VERSION . " 🐝")
+    hotkeyText := "Hotkeys: F1 (Start) | F2 (Stop) | P (Pause) | F3 (Explosives) | Esc (Exit)"
+    hotkeyText .= " | " . BB_BOMB_HOTKEY . " (Bomb) | " . BB_TNT_CRATE_HOTKEY . " (TNT Crate) | " . BB_TNT_BUNDLE_HOTKEY . " (TNT Bundle)"
+    BB_myGUI.Add("Text", "x10 y30 w400 h20 Center", hotkeyText)
     
     ; Script Status Section
     BB_myGUI.Add("GroupBox", "x10 y60 w400 h120", "Script Status")
@@ -562,17 +545,17 @@ BB_setupGUI() {
     BB_myGUI.Add("Text", "x200 y340 w200 h20", "Idle").Name := "TntBundleStatus"
     
     ; Last Action/Error Section
-    BB_myGUI.Add("GroupBox", "x10 y370 w400 h60", "Last Action/Error")
+    BB_myGUI.Add("GroupBox", "x10 y370 w400 h100", "Last Action/Error")
     BB_myGUI.Add("Text", "x20 y390 w180 h20", "Last Action:")
-    BB_myGUI.Add("Text", "x200 y390 w200 h20", "None").Name := "LastAction"
-    BB_myGUI.Add("Text", "x20 y410 w180 h20", "Last Error:")
-    BB_myGUI.Add("Text", "x200 y410 w200 h20 cRed", "None").Name := "LastError"
+    BB_myGUI.Add("Text", "x200 y390 w200 h40 Wrap", "None").Name := "LastAction"
+    BB_myGUI.Add("Text", "x20 y430 w180 h20", "Last Error:")
+    BB_myGUI.Add("Text", "x200 y430 w200 h40 Wrap cRed", "None").Name := "LastError"
     
     ; Buttons
-    BB_myGUI.Add("Button", "x10 y440 w120 h30", "Reload Config").OnEvent("Click", BB_loadConfigFromFile)
-    BB_myGUI.Add("Button", "x290 y440 w120 h30", "Clear Log").OnEvent("Click", BB_clearLog)
+    BB_myGUI.Add("Button", "x10 y480 w120 h30", "Reload Config").OnEvent("Click", BB_loadConfigFromFile)
+    BB_myGUI.Add("Button", "x290 y480 w120 h30", "Clear Log").OnEvent("Click", BB_clearLog)
     
-    BB_myGUI.Show("x0 y0 w420 h480")
+    BB_myGUI.Show("x0 y0 w420 h520")
 }
 
 ; ===================== HOTKEYS =====================
@@ -666,21 +649,45 @@ BB_updateActiveWindows() {
     }
     
     BB_active_windows := []
-    for hwnd in WinGetList() {
+    activeHwnd := WinGetID("A")  ; Get the currently active window
+    windows := WinGetList("ahk_exe RobloxPlayerBeta.exe")
+    
+    for hwnd in windows {
         try {
             title := WinGetTitle(hwnd)
             processName := WinGetProcessName(hwnd)
-            if (InStr(title, BB_WINDOW_TITLE) && !BB_hasExcludedTitle(title) && processName = "RobloxPlayerBeta.exe") {
-                BB_active_windows.Push(hwnd)
-                BB_updateStatusAndLog("Found Roblox window: " title " (hwnd: " hwnd ", process: " processName ")")
-            } else {
-                BB_updateStatusAndLog("Skipped window: " title " (process: " processName ")")
+            if (processName != "RobloxPlayerBeta.exe") {
+                BB_updateStatusAndLog("Skipped window: " . title . " (process: " . processName . ")")
+                continue
             }
+            if (!InStr(title, BB_WINDOW_TITLE) || BB_hasExcludedTitle(title)) {
+                BB_updateStatusAndLog("Skipped window: " . title . " (does not match criteria)")
+                continue
+            }
+            
+            ; Add the window to the list, prioritizing the active window
+            BB_active_windows.Push(hwnd)
+            BB_updateStatusAndLog("Found Roblox window: " . title . " (hwnd: " . hwnd . ", process: " . processName . ") (active: " . (hwnd = activeHwnd ? "Yes" : "No") . ")")
         } catch as err {
-            BB_updateStatusAndLog("Error checking window " hwnd ": " err.Message)
+            BB_updateStatusAndLog("Error checking window " . hwnd . ": " . err.Message, true, true)
         }
     }
+    
+    ; Sort windows to prioritize the active one
+    if (BB_active_windows.Length > 1 && activeHwnd) {
+        prioritized := []
+        for hwnd in BB_active_windows {
+            if (hwnd = activeHwnd) {
+                prioritized.InsertAt(1, hwnd)
+            } else {
+                prioritized.Push(hwnd)
+            }
+        }
+        BB_active_windows := prioritized
+    }
+    
     BB_last_window_check := currentTime
+    BB_updateStatusAndLog("Found " . BB_active_windows.Length . " valid Roblox windows")
     return BB_active_windows
 }
 
@@ -696,33 +703,136 @@ BB_hasExcludedTitle(title) {
 ; ===================== ERROR HANDLING =====================
 
 BB_checkForError() {
-    global BB_automationState, BB_FAILED_INTERACTION_COUNT
+    global BB_automationState, BB_FAILED_INTERACTION_COUNT, BB_currentArea, BB_merchantState
     FoundX := "", FoundY := ""
     errorTypes := ["error_message", "error_message_alt1", "connection_lost"]
     errorDetected := false
-    for errorType in errorTypes {
-        if BB_smartTemplateMatch(errorType, &FoundX, &FoundY) {
+    errorType := ""
+    
+    ; Check for errors on screen
+    for type in errorTypes {
+        if BB_smartTemplateMatch(type, &FoundX, &FoundY) {
             errorDetected := true
+            errorType := type
             break
         }
     }
+
     if errorDetected {
+        BB_updateStatusAndLog("Error detected (" . errorType . ")", true, true, true)  ; Take screenshot on error
+        
+        ; Define recovery actions for each state
         errorActions := Map(
-            "DisableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500)),
-            "GoToTop", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500)),
-            "TeleportToArea4", () => (SendInput("{t}"), Sleep(500)),
-            "Shopping", () => (SendInput("{Esc}"), Sleep(500)),
-            "TeleportToArea5", () => (SendInput("{t}"), Sleep(500)),
-            "EnableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500)),
-            "Idle", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500))
+            "DisableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_checkAutofarming()),
+            "GoToTop", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_goToTop()),
+            "TeleportToArea4", () => (SendInput("{Esc}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu()),
+            "Shopping", () => (SendInput("{Esc}"), Sleep(500), BB_interactWithMerchant()),
+            "TeleportToArea5", () => (SendInput("{Esc}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu()),
+            "EnableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_checkAutofarming()),
+            "Idle", () => (SendInput("{Space down}"), Sleep(100), SendInput("{Space up}"), Sleep(500))
         )
+
+        ; Execute the recovery action
         action := errorActions.Has(BB_automationState) ? errorActions[BB_automationState] : errorActions["Idle"]
-        action()
-        BB_updateStatusAndLog("Error detected (" errorType ") and handled in state " BB_automationState)
+        actionResult := action()
+        
+        ; Log the recovery attempt
+        BB_updateStatusAndLog("Attempted recovery from error in state " . BB_automationState . " (Result: " . (actionResult ? "Success" : "Failed") . ")")
+        
+        ; Increment failure count and check if we should stop
         BB_FAILED_INTERACTION_COUNT++
+        if (BB_FAILED_INTERACTION_COUNT >= BB_MAX_FAILED_INTERACTIONS) {
+            BB_updateStatusAndLog("Too many failed recoveries (" . BB_FAILED_INTERACTION_COUNT . "), attempting to reset game state", true, true)
+            if !BB_resetGameState() {
+                BB_stopAutomation()
+                return true
+            }
+        }
+        
         return true
     }
+    
     return false
+}
+
+BB_resetGameState() {
+    global BB_currentArea, BB_merchantState, BB_isAutofarming, BB_automationState, BB_FAILED_INTERACTION_COUNT
+    BB_updateStatusAndLog("Attempting to reset game state")
+    
+    ; Close the game (if possible) and reopen it
+    windows := BB_updateActiveWindows()
+    for hwnd in windows {
+        try {
+            WinClose("ahk_id " . hwnd)
+            BB_updateStatusAndLog("Closed Roblox window: " . hwnd)
+        } catch as err {
+            BB_updateStatusAndLog("Failed to close Roblox window " . hwnd . ": " . err.Message, true, true)
+            return false
+        }
+    }
+    
+    ; Wait for the game to close
+    Sleep(5000)
+    
+    ; Attempt to reopen Roblox (assuming the user has a shortcut or URL handler)
+    try {
+        Run("roblox://placeId=8737890210")  ; Replace with actual PS99 game link if different
+        BB_updateStatusAndLog("Attempted to reopen Pet Simulator 99")
+    } catch as err {
+        BB_updateStatusAndLog("Failed to reopen Roblox: " . err.Message, true, true)
+        return false
+    }
+    
+    ; Wait for the game to load
+    Sleep(30000)  ; Adjust based on typical load time
+    
+    ; Reset script state
+    BB_currentArea := "Unknown"
+    BB_merchantState := "Not Interacted"
+    BB_isAutofarming := false
+    BB_automationState := "Idle"
+    BB_FAILED_INTERACTION_COUNT := 0
+    
+    ; Check if the game reopened successfully
+    windows := BB_updateActiveWindows()
+    if (windows.Length > 0) {
+        BB_updateStatusAndLog("Game state reset successful, resuming automation")
+        return true
+    } else {
+        BB_updateStatusAndLog("Failed to reset game state: No Roblox windows found after restart", true, true)
+        return false
+    }
+}
+
+BB_checkForUpdates() {
+    global BB_VERSION
+    versionUrl := "https://raw.githubusercontent.com/xXGeminiXx/BMATMiner/main/version.txt"
+    try {
+        tempFile := A_Temp . "\bb_version.txt"
+        http := ComObject("WinHttp.WinHttpRequest.5.1")
+        http.Open("GET", versionUrl, false)
+        http.Send()
+        if (http.Status != 200) {
+            throw Error("HTTP status " . http.Status . " received")
+        }
+        file := FileOpen(tempFile, "w")
+        file.Write(http.ResponseText)
+        file.Close()
+        latestVersion := Trim(FileRead(tempFile))
+        FileDelete(tempFile)
+        ; Validate version format (e.g., expecting something like "1.0.1")
+        if (!RegExMatch(latestVersion, "^\d+\.\d+\.\d+$")) {
+            throw Error("Invalid version format: " . latestVersion)
+        }
+        if (latestVersion != BB_VERSION) {
+            BB_updateStatusAndLog("New version available: " . latestVersion . " (current: " . BB_VERSION . ")")
+            MsgBox("A new version (" . latestVersion . ") is available! Please update the script.", "Update Available", 0x40)
+        } else {
+            BB_updateStatusAndLog("Script is up to date (version: " . BB_VERSION . ")")
+        }
+    } catch as err {
+        BB_updateStatusAndLog("Failed to check for updates: " . err.Message, true, true)
+    }
 }
 
 ; ===================== MINING AUTOMATION FUNCTIONS =====================
@@ -781,10 +891,10 @@ BB_openTeleportMenu() {
         return true
     }
     ; Fallback to keyboard shortcut
-    SendInput("{" BB_TELEPORT_HOTKEY " down}")
+    SendInput("{" . BB_TELEPORT_HOTKEY . " down}")
     Sleep(100)
-    SendInput("{" BB_TELEPORT_HOTKEY " up}")
-    BB_updateStatusAndLog("Failed to open teleport menu via image, used hotkey " BB_TELEPORT_HOTKEY)
+    SendInput("{" . BB_TELEPORT_HOTKEY . " up}")
+    BB_updateStatusAndLog("Failed to open teleport menu via image, used hotkey " . BB_TELEPORT_HOTKEY)
     Sleep(1000)
     if BB_smartTemplateMatch("area_4_button", &FoundX, &FoundY) {
         BB_updateStatusAndLog("Teleport menu opened successfully via hotkey")
@@ -800,11 +910,11 @@ BB_teleportToArea(areaTemplate) {
     if BB_smartTemplateMatch(areaTemplate, &FoundX, &FoundY) {
         BB_clickAt(FoundX, FoundY)
         BB_currentArea := (areaTemplate = "area_4_button") ? "Area 4" : (areaTemplate = "area_5_button") ? "Area 5" : "Unknown"
-        BB_updateStatusAndLog("Teleported to " BB_currentArea)
+        BB_updateStatusAndLog("Teleported to " . BB_currentArea)
         Sleep(2000)
         return true
     }
-    BB_updateStatusAndLog("Failed to teleport to " areaTemplate, true)
+    BB_updateStatusAndLog("Failed to teleport to " . areaTemplate, true)
     return false
 }
 
@@ -838,15 +948,15 @@ BB_buyMerchantItems() {
         FoundX := "", FoundY := ""
         if BB_smartTemplateMatch("buy_button", &FoundX, &FoundY, searchArea) {
             BB_clickAt(FoundX, FoundY)
-            BB_updateStatusAndLog("Clicked buy button " (buyCount + 1))
+            BB_updateStatusAndLog("Clicked buy button " . (buyCount + 1))
             buyCount++
             Sleep(500)
         } else {
-            BB_updateStatusAndLog("No more buy buttons found after " buyCount " purchases")
+            BB_updateStatusAndLog("No more buy buttons found after " . buyCount . " purchases")
             break
         }
     }
-    BB_merchantState := "Items Purchased (" buyCount ")"
+    BB_merchantState := "Items Purchased (" . buyCount . ")"
     return true
 }
 
@@ -865,6 +975,12 @@ BB_enableAutomine() {
 ; ===================== EXPLOSIVES FUNCTIONS =====================
 
 BB_sendHotkeyWithDownUp(hotkey) {
+    hwnd := WinGetID("A")
+    if (!hwnd || WinGetProcessName(hwnd) != "RobloxPlayerBeta.exe") {
+        BB_updateStatusAndLog("No Roblox window active for hotkey: " . hotkey, true, true)
+        return false
+    }
+
     modifiers := ""
     key := hotkey
     if (InStr(hotkey, "^")) {
@@ -890,9 +1006,9 @@ BB_sendHotkeyWithDownUp(hotkey) {
         SendInput("{Alt down}")
     }
 
-    SendInput("{" key " down}")
+    SendInput("{" . key . " down}")
     Sleep(100)
-    SendInput("{" key " up}")
+    SendInput("{" . key . " up}")
 
     if (InStr(modifiers, "Alt")) {
         SendInput("{Alt up}")
@@ -904,29 +1020,30 @@ BB_sendHotkeyWithDownUp(hotkey) {
         SendInput("{Ctrl up}")
     }
     Sleep(100)
+    return true
 }
 
 BB_useBomb() {
     global BB_BOMB_HOTKEY, BB_lastBombStatus
     BB_sendHotkeyWithDownUp(BB_BOMB_HOTKEY)
-    BB_lastBombStatus := "Used at " A_Now
-    BB_updateStatusAndLog("Used bomb with hotkey: " BB_BOMB_HOTKEY)
+    BB_lastBombStatus := "Used at " . A_Now
+    BB_updateStatusAndLog("Used bomb with hotkey: " . BB_BOMB_HOTKEY)
     BB_checkForError()
 }
 
 BB_useTntCrate() {
     global BB_TNT_CRATE_HOTKEY, BB_lastTntCrateStatus
     BB_sendHotkeyWithDownUp(BB_TNT_CRATE_HOTKEY)
-    BB_lastTntCrateStatus := "Used at " A_Now
-    BB_updateStatusAndLog("Used TNT crate with hotkey: " BB_TNT_CRATE_HOTKEY)
+    BB_lastTntCrateStatus := "Used at " . A_Now
+    BB_updateStatusAndLog("Used TNT crate with hotkey: " . BB_TNT_CRATE_HOTKEY)
     BB_checkForError()
 }
 
 BB_useTntBundle() {
     global BB_TNT_BUNDLE_HOTKEY, BB_lastTntBundleStatus
     BB_sendHotkeyWithDownUp(BB_TNT_BUNDLE_HOTKEY)
-    BB_lastTntBundleStatus := "Used at " A_Now
-    BB_updateStatusAndLog("Used TNT bundle with hotkey: " BB_TNT_BUNDLE_HOTKEY)
+    BB_lastTntBundleStatus := "Used at " . A_Now
+    BB_updateStatusAndLog("Used TNT bundle with hotkey: " . BB_TNT_BUNDLE_HOTKEY)
     BB_checkForError()
 }
 
@@ -958,11 +1075,11 @@ BB_tntBundleLoop() {
 }
 
 ; ===================== STATE MACHINE AUTOMATION LOOP =====================
-
 BB_miningAutomationLoop() {
     global BB_running, BB_paused, BB_automationState, BB_FAILED_INTERACTION_COUNT, BB_MAX_FAILED_INTERACTIONS
     global BB_currentArea, BB_merchantState, BB_isAutofarming, BB_SAFE_MODE
     static wasAutofarming := false
+    static skippedActions := []
 
     if (!BB_running || BB_paused) {
         BB_updateStatusAndLog("Automation loop skipped (not running or paused)")
@@ -975,18 +1092,22 @@ BB_miningAutomationLoop() {
         return
     }
 
-    BB_updateStatusAndLog("Starting automation cycle (" windows.Length " windows)")
+    BB_updateStatusAndLog("Starting automation cycle (" . windows.Length . " windows)")
     for hwnd in windows {
         if (!BB_running || BB_paused) {
             BB_updateStatusAndLog("Automation loop interrupted")
             break
         }
-        BB_updateStatusAndLog("Processing window: " hwnd)
+        BB_updateStatusAndLog("Processing window: " . hwnd)
         if !BB_robustWindowActivation(hwnd) {
             BB_FAILED_INTERACTION_COUNT++
             BB_updateStatusAndLog("Skipping window due to activation failure")
             continue
         }
+
+        ; Reset skipped actions for this cycle
+        if BB_SAFE_MODE
+            skippedActions := []
 
         ; Check for errors before proceeding
         if BB_checkForError() {
@@ -1007,6 +1128,7 @@ BB_miningAutomationLoop() {
             case "DisableAutomine":
                 if BB_SAFE_MODE {
                     BB_updateStatusAndLog("Safe mode: Skipping automine disable")
+                    skippedActions.Push("DisableAutomine")
                     BB_setState("GoToTop")
                     continue
                 }
@@ -1019,6 +1141,7 @@ BB_miningAutomationLoop() {
             case "GoToTop":
                 if BB_SAFE_MODE {
                     BB_updateStatusAndLog("Safe mode: Skipping go to top")
+                    skippedActions.Push("GoToTop")
                     BB_setState("TeleportToArea4")
                     continue
                 }
@@ -1043,6 +1166,7 @@ BB_miningAutomationLoop() {
             case "Shopping":
                 if BB_SAFE_MODE {
                     BB_updateStatusAndLog("Safe mode: Skipping merchant interaction")
+                    skippedActions.Push("Shopping")
                     BB_setState("TeleportToArea5")
                     continue
                 }
@@ -1072,6 +1196,7 @@ BB_miningAutomationLoop() {
             case "EnableAutomine":
                 if BB_SAFE_MODE {
                     BB_updateStatusAndLog("Safe mode: Skipping automine enable")
+                    skippedActions.Push("EnableAutomine")
                     BB_setState("Idle")
                     continue
                 }
@@ -1083,7 +1208,7 @@ BB_miningAutomationLoop() {
                 }
             case "Error":
                 if (BB_FAILED_INTERACTION_COUNT >= BB_MAX_FAILED_INTERACTIONS) {
-                    BB_updateStatusAndLog("Too many failed interactions (" BB_FAILED_INTERACTION_COUNT "), stopping", true, true)
+                    BB_updateStatusAndLog("Too many failed interactions (" . BB_FAILED_INTERACTION_COUNT . "), stopping", true, true)
                     BB_stopAutomation()
                     return
                 }
@@ -1092,7 +1217,10 @@ BB_miningAutomationLoop() {
         }
 
         if BB_automationState = "Idle" {
-            BB_updateStatusAndLog("Cycle completed for window: " hwnd)
+            BB_updateStatusAndLog("Cycle completed for window: " . hwnd)
+            if BB_SAFE_MODE && skippedActions.Length > 0 {
+                BB_updateStatusAndLog("Safe mode summary: Skipped actions - " . StrJoin(skippedActions, ", "))
+            }
             BB_FAILED_INTERACTION_COUNT := 0
         }
     }
@@ -1124,7 +1252,7 @@ BB_reconnectCheckLoop() {
 
 BB_loadConfigFromFile(*) {
     BB_loadConfig()
-    MsgBox("Configuration reloaded from " BB_CONFIG_FILE)
+    MsgBox("Configuration reloaded from " . BB_CONFIG_FILE)
 }
 
 BB_exitApp(*) {
@@ -1144,4 +1272,16 @@ BB_exitApp(*) {
 
 BB_setupGUI()
 BB_loadConfig()
+BB_checkForUpdates()
+
+; Bind explosives hotkeys after functions are defined
+try {
+    Hotkey(BB_BOMB_HOTKEY, BB_useBomb)
+    Hotkey(BB_TNT_CRATE_HOTKEY, BB_useTntCrate)
+    Hotkey(BB_TNT_BUNDLE_HOTKEY, BB_useTntBundle)
+    BB_updateStatusAndLog("Explosives hotkeys bound successfully")
+} catch as err {
+    BB_updateStatusAndLog("Failed to bind explosives hotkeys: " . err.Message, true, true)
+}
+
 TrayTip("Ready! Press F1 to start.", "🐝 BeeBrained's PS99 Mining Event Macro", 0x10)
