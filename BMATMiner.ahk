@@ -26,7 +26,7 @@ if !A_IsAdmin {
 }
 
 ; ===================== GLOBAL VARIABLES =====================
-global BB_VERSION := "1.6.2"
+global BB_VERSION := "1.6.9"
 global BB_running := false
 global BB_paused := false
 global BB_lastGameStateReset := 0
@@ -1038,8 +1038,8 @@ BB_enableAutomine(hwnd) {
     } else {
         ; Fallback to fixed coordinates if template matching fails
         WinGetPos(&winX, &winY, &winW, &winH, "ahk_id " . hwnd)
-        clickX := winX + 50
-        clickY := winY + 570
+        clickX := winX + 60
+        clickY := winY + 550
         BB_clickAt(clickX, clickY)
         BB_updateStatusAndLog("Automine button not found, clicked at fixed position x=" . clickX . ", y=" . clickY . " to enable automining")
     }
@@ -1300,8 +1300,8 @@ BB_disableAutomine(hwnd) {
     } else {
         ; Fallback to fixed coordinates if template matching fails
         WinGetPos(&winX, &winY, &winW, &winH, "ahk_id " . hwnd)
-        clickX := winX + 50
-        clickY := winY + 550
+        clickX := winX + 60
+        clickY := winY + 600
         BB_clickAt(clickX, clickY)
         BB_updateStatusAndLog("Automine button not found, clicked at fixed position x=" . clickX . ", y=" . clickY . " to disable automining")
     }
@@ -1686,126 +1686,340 @@ BB_checkAutofarming(hwnd) {
 }
 
 BB_smartTemplateMatch(templateName, &FoundX, &FoundY, hwnd, searchArea := "") {
-    global BB_TEMPLATES, BB_TEMPLATE_FOLDER, BB_imageCache, BB_isAutofarming
+    global BB_TEMPLATES, BB_TEMPLATE_FOLDER, BB_isAutofarming
 
-    BB_updateStatusAndLog("Starting template match for '" . templateName . "' (hwnd: " . hwnd . ")")
+    BB_updateStatusAndLog("Starting enhanced template match for '" . templateName . "' (hwnd: " . hwnd . ")")
 
-    ; Validate template and window
-    if (!BB_TEMPLATES.Has(templateName)) {
-        BB_updateStatusAndLog("Template '" . templateName . "' not found in BB_TEMPLATES", true, true)
-        return false
-    }
-
-    templateFile := BB_TEMPLATE_FOLDER . "\" . BB_TEMPLATES[templateName]
-    if (!FileExist(templateFile)) {
-        BB_updateStatusAndLog("Template file not found: " . templateFile, true, true)
-        return false
-    }
-
+    ; Validate window
     if (!WinExist("ahk_id " . hwnd)) {
         BB_updateStatusAndLog("Invalid window handle: " . hwnd, true, true)
         return false
     }
 
-    ; Ensure window is at 0,0 and 1938x1038
+    ; Force window to standard size
     WinMove(0, 0, 1938, 1038, "ahk_id " . hwnd)
     WinGetPos(&winX, &winY, &winW, &winH, "ahk_id " . hwnd)
     BB_updateStatusAndLog("Roblox window moved to: x=" . winX . ", y=" . winY . ", w=" . winW . ", h=" . winH)
 
-    ; Define search regions (expanded dynamically)
-    searchRegions := [
-        [40, 560, 160, 600],  ; Primary region
-        [30, 550, 170, 610],  ; Slightly expanded
-        [20, 540, 180, 620],  ; More expanded
-        [10, 530, 190, 630],  ; Even larger
-        [0, 520, 200, 640]    ; Largest area on the left side
-    ]
-
-    ; Adjust expected button coordinates (try moving up slightly to 570)
-    expectedButtonX := winX + 50
-    expectedButtonY := winY + 570  ; Moved up 10 pixels to test
-    BB_updateStatusAndLog("Expected button position: (" . expectedButtonX . "," . expectedButtonY . ")")
-
-    ; Step 1: Try template matching with increasing search regions
-    for region in searchRegions {
-        searchX1 := winX + region[1]
-        searchY1 := winY + region[2]
-        searchX2 := winX + region[3]
-        searchY2 := winY + region[4]
-        BB_updateStatusAndLog("Searching with: " . templateFile)
-        BB_updateStatusAndLog("Search region: " . searchX1 . "," . searchY1 . " to " . searchX2 . "," . searchY2)
-
-        ; Check pixel color for debugging
-        pixelColor := PixelGetColor(expectedButtonX, expectedButtonY, "RGB")
-        BB_updateStatusAndLog("Pixel color at expected button location (" . expectedButtonX . "," . expectedButtonY . "): " . pixelColor)
-
-        ; Attempt template matching with high tolerance and transparency
-        try {
-            if (ImageSearch(&FoundX, &FoundY, searchX1, searchY1, searchX2, searchY2, "*150 *TransBlack *TransWhite " . templateFile)) {
-                BB_updateStatusAndLog("Found at x=" . FoundX . ", y=" . FoundY . " in region " . A_Index)
-                return true
-            } else {
-                BB_updateStatusAndLog("Not found in region " . A_Index)
-            }
-        } catch as err {
-            BB_updateStatusAndLog("ImageSearch error: " . err.Message, true, true)
-            continue
-        }
+    ; DPI scaling adjustment
+    dpiScale := A_ScreenDPI / 96
+    if (dpiScale != 1) {
+        BB_updateStatusAndLog("DPI scaling applied: " . dpiScale)
     }
 
-    ; Step 2: If template matching fails, use pixel color detection for autofarm buttons
+    ; Dynamic coordinates
+    expectedButtonX := winX + Round(winW * 0.026 * dpiScale)  ; ~50/1938
+    expectedButtonY := winY + Round(winH * 0.55 * dpiScale)   ; ~570/1038
+    BB_updateStatusAndLog("Expected button position: (" . expectedButtonX . "," . expectedButtonY . ")")
+
+    ; Define search regions (adjusted for error messages to be higher)
+    errorTemplates := ["error_message", "error_message_alt1", "connection_lost"]
+    isErrorTemplate := false
+    for template in errorTemplates {
+        if (template = templateName) {
+            isErrorTemplate := true
+            break
+        }
+    }
+    searchRegions := isErrorTemplate 
+        ? [  ; Tighter, higher regions for error messages
+            [Round(winW * 0.1), Round(winH * 0.1), Round(winW * 0.4), Round(winH * 0.3)],   ; ~194,104 to 775,311
+            [Round(winW * 0.05), Round(winH * 0.05), Round(winW * 0.45), Round(winH * 0.35)] ; ~97,52 to 872,363
+          ]
+        : [  ; Broader regions for autofarm buttons
+            [Round(winW * 0.015), Round(winH * 0.50), Round(winW * 0.10), Round(winH * 0.62)],  ; ~30,519 to 194,644
+            [Round(winW * 0.01), Round(winH * 0.48), Round(winW * 0.12), Round(winH * 0.64)],   ; ~20,498 to 232,6640
+            [Round(winW * 0.005), Round(winH * 0.46), Round(winW * 0.15), Round(winH * 0.66)]   ; ~10,476 to 290,685
+          ]
+
+    ; Step 1: Template matching with adjusted tolerance
+    templateFile := BB_TEMPLATES.Has(templateName) ? BB_TEMPLATE_FOLDER . "\" . BB_TEMPLATES[templateName] : ""
+    if (templateFile && FileExist(templateFile)) {
+        tolerance := isErrorTemplate ? "*100" : "*250"  ; Stricter for errors, lenient for autofarm
+        for region in searchRegions {
+            searchX1 := winX + region[1]
+            searchY1 := winY + region[2]
+            searchX2 := winX + region[3]
+            searchY2 := winY + region[4]
+            BB_updateStatusAndLog("Searching template: " . templateFile)
+            BB_updateStatusAndLog("Search region: " . searchX1 . "," . searchY1 . " to " . searchX2 . "," . searchY2)
+
+            pixelColor := PixelGetColor(expectedButtonX, expectedButtonY, "RGB")
+            BB_updateStatusAndLog("Pixel color at (" . expectedButtonX . "," . expectedButtonY . "): " . pixelColor)
+
+            try {
+                if (ImageSearch(&FoundX, &FoundY, searchX1, searchY1, searchX2, searchY2, tolerance . " *w0.8 *h0.8 *TransBlack *TransWhite " . templateFile)
+                    || ImageSearch(&FoundX, &FoundY, searchX1, searchY1, searchX2, searchY2, tolerance . " *w1.2 *h1.2 *TransBlack *TransWhite " . templateFile)) {
+                    BB_updateStatusAndLog("Template matched at x=" . FoundX . ", y=" . FoundY . " in region " . A_Index)
+                    
+                    ; Validate error templates to avoid false positives
+                    if (isErrorTemplate) {
+                        if (BB_validateErrorMatch(FoundX, FoundY)) {
+                            BB_updateStatusAndLog("Error match validated at x=" . FoundX . ", y=" . FoundY)
+                            return true
+                        } else {
+                            BB_updateStatusAndLog("Error match rejected after validation at x=" . FoundX . ", y=" . FoundY)
+                            continue
+                        }
+                    }
+                    return true
+                } else {
+                    BB_updateStatusAndLog("Template not found in region " . A_Index)
+                }
+            } catch as err {
+                BB_updateStatusAndLog("ImageSearch error: " . err.Message, true, true)
+            }
+        }
+    } else {
+        BB_updateStatusAndLog("Skipping template matching (no valid template file)", true)
+    }
+
+    ; Step 2: Autofarm-specific detection (unchanged from previous aggressive version)
     if (templateName = "autofarm_off" || templateName = "autofarm_on") {
-        BB_updateStatusAndLog("Template matching failed, attempting pixel color detection")
+        BB_updateStatusAndLog("Template failed or skipped, proceeding to enhanced autofarm detection")
 
-        ; Expected colors for the dot (red for off, green for on)
-        expectedRed := 0xFF0000  ; Red dot (autofarm_off)
-        expectedGreen := 0x00FF00  ; Green dot (autofarm_on)
         pixelColor := PixelGetColor(expectedButtonX, expectedButtonY, "RGB")
-        BB_updateStatusAndLog("Pixel color at (" . expectedButtonX . "," . expectedButtonY . "): " . pixelColor)
+        BB_updateStatusAndLog("Sampled pixel color at (" . expectedButtonX . "," . expectedButtonY . "): " . pixelColor)
+        tolerance := 150
 
-        ; Extract RGB components
-        r := (pixelColor >> 16) & 0xFF
-        g := (pixelColor >> 8) & 0xFF
-        b := pixelColor & 0xFF
+        static expectedRed := 0xFF0000
+        static expectedGreen := 0x00FF00
 
-        ; Check for red (autofarm_off) with high tolerance
-        rRed := (expectedRed >> 16) & 0xFF
-        gRed := (expectedRed >> 8) & 0xFF
-        bRed := expectedRed & 0xFF
-        if (Abs(r - rRed) <= 100 && Abs(g - gRed) <= 100 && Abs(b - bRed) <= 100) {
-            BB_updateStatusAndLog("Pixel color matches red (autofarm_off), automining is OFF")
+        if (BB_isColorSimilar(pixelColor, expectedRed, tolerance) && BB_verifyColorCluster(expectedButtonX, expectedButtonY, expectedRed, tolerance)) {
+            BB_updateStatusAndLog("Color matches red (autofarm_off), automining is OFF")
             FoundX := expectedButtonX
             FoundY := expectedButtonY
             BB_isAutofarming := false
             return (templateName = "autofarm_off")
-        }
-
-        ; Check for green (autofarm_on) with high tolerance
-        rGreen := (expectedGreen >> 16) & 0xFF
-        gGreen := (expectedGreen >> 8) & 0xFF
-        bGreen := expectedGreen & 0xFF
-        if (Abs(r - rGreen) <= 100 && Abs(g - gGreen) <= 100 && Abs(b - bGreen) <= 100) {
-            BB_updateStatusAndLog("Pixel color matches green (autofarm_on), automining is ON")
+        } else if (BB_isColorSimilar(pixelColor, expectedGreen, tolerance) && BB_verifyColorCluster(expectedButtonX, expectedButtonY, expectedGreen, tolerance)) {
+            BB_updateStatusAndLog("Color matches green (autofarm_on), automining is ON")
             FoundX := expectedButtonX
             FoundY := expectedButtonY
             BB_isAutofarming := true
             return (templateName = "autofarm_on")
         }
 
-		; Step 3: If pixel color doesn’t match, attempt a blind click and assume ON
-		BB_updateStatusAndLog("Pixel color does not match expected colors, attempting blind click at (" . expectedButtonX . "," . expectedButtonY . ")")
-		BB_clickAt(expectedButtonX, expectedButtonY)
-		Sleep(1000)  ; Wait for UI to settle
+        BB_updateStatusAndLog("Color detection inconclusive, attempting edge detection")
+        if (BB_detectEdges(expectedButtonX, expectedButtonY, &FoundX, &FoundY)) {
+            BB_updateStatusAndLog("Edge detected at x=" . FoundX . ", y=" . FoundY . ", proceeding to validate")
+            BB_clickAt(FoundX, FoundY)
+            Sleep(1000)
+            if (BB_detectMovement(hwnd)) {
+                BB_updateStatusAndLog("Movement detected after edge-based click, automining is ON")
+                BB_isAutofarming := true
+                return true
+            } else {
+                BB_updateStatusAndLog("No movement after edge-based click, automining is OFF")
+                BB_isAutofarming := false
+                return false
+            }
+        }
 
-        ; Assume autofarming is ON after the click, regardless of color change
-        BB_updateStatusAndLog("Blind click performed, assuming automining is ON")
+        BB_updateStatusAndLog("Edge detection failed, attempting pixel grid pattern match")
+        if (BB_matchPixelGrid(expectedButtonX, expectedButtonY, &FoundX, &FoundY)) {
+            BB_updateStatusAndLog("Grid pattern matched at x=" . FoundX . ", y=" . FoundY . ", proceeding to validate")
+            BB_clickAt(FoundX, FoundY)
+            Sleep(1000)
+            if (BB_detectMovement(hwnd)) {
+                BB_updateStatusAndLog("Movement detected after grid-based click, automining is ON")
+                BB_isAutofarming := true
+                return true
+            } else {
+                BB_updateStatusAndLog("No movement after grid-based click, automining is OFF")
+                BB_isAutofarming := false
+                return false
+            }
+        }
+
+        BB_updateStatusAndLog("All detection failed, performing extreme fallback")
+        BB_ensureGameState(hwnd)
+        Sleep(500)
+        loop 3 {
+            BB_clickAt(expectedButtonX, expectedButtonY)
+            BB_updateStatusAndLog("Extreme fallback click " . A_Index . " at (" . expectedButtonX . "," . expectedButtonY . ")")
+            Sleep(1000)
+            if (BB_detectMovement(hwnd)) {
+                BB_updateStatusAndLog("Movement detected, automining is ON")
+                FoundX := expectedButtonX
+                FoundY := expectedButtonY
+                BB_isAutofarming := true
+                return true
+            }
+        }
+        BB_updateStatusAndLog("No movement after extreme fallback, assuming automining is OFF")
         FoundX := expectedButtonX
         FoundY := expectedButtonY
-        BB_isAutofarming := true
-        return true
+        BB_isAutofarming := false
+        return false
     }
 
+    BB_updateStatusAndLog("Template '" . templateName . "' not found after all attempts")
     return false
+}
+
+; Validation function for error templates
+BB_validateErrorMatch(x, y) {
+    BB_updateStatusAndLog("Validating error match at (" . x . "," . y . ")")
+    radius := 5
+    requiredMatches := 5  ; Increase to 5 for stricter validation
+    matches := 0
+
+    ; Refine error colors to focus on red (common for errors) and exclude generic whites/grays unless paired with red
+    errorColors := [0xFF0000]  ; Start with red as the primary error indicator
+    tolerance := 80  ; Tighten tolerance slightly for more precision
+
+    ; Check a 10x10 area
+    xCheck := x - radius
+    while (xCheck <= x + radius) {
+        yCheck := y - radius
+        while (yCheck <= y + radius) {
+            try {
+                color := PixelGetColor(xCheck, yCheck, "RGB")
+                for errorColor in errorColors {
+                    if (BB_isColorSimilar(color, errorColor, tolerance)) {
+                        matches++
+                        BB_updateStatusAndLog("Validation match at (" . xCheck . "," . yCheck . "): " . color)
+                        break
+                    }
+                }
+            } catch {
+                ; Skip out-of-bounds or errors
+            }
+            yCheck++
+        }
+        xCheck++
+    }
+
+    ; Secondary check: If red is found, look for white/gray nearby to confirm error UI
+    if (matches >= 2) {  ; Require at least 2 red pixels before secondary check
+        whiteGrayColors := [0xFFFFFF, 0xC0C0C0]
+        whiteGrayMatches := 0
+        xCheck := x - radius
+        while (xCheck <= x + radius) {
+            yCheck := y - radius
+            while (yCheck <= y + radius) {
+                try {
+                    color := PixelGetColor(xCheck, yCheck, "RGB")
+                    for wgColor in whiteGrayColors {
+                        if (BB_isColorSimilar(color, wgColor, tolerance)) {
+                            whiteGrayMatches++
+                            BB_updateStatusAndLog("Secondary validation match at (" . xCheck . "," . yCheck . "): " . color)
+                            break
+                        }
+                    }
+                } catch {
+                    ; Skip out-of-bounds or errors
+                }
+                yCheck++
+            }
+            xCheck++
+        }
+        ; Require both red and some white/gray to confirm an error
+        if (whiteGrayMatches >= 3) {
+            BB_updateStatusAndLog("Error UI confirmed with " . matches . " red and " . whiteGrayMatches . " white/gray matches")
+            return true
+        } else {
+            BB_updateStatusAndLog("Red found but insufficient white/gray context (" . whiteGrayMatches . " matches)")
+        }
+    }
+
+    BB_updateStatusAndLog("Validation failed: " . matches . " matches found, required " . requiredMatches)
+    return false
+}
+
+; Edge Detection 
+BB_detectEdges(centerX, centerY, &FoundX, &FoundY) {
+    BB_updateStatusAndLog("Performing edge detection around (" . centerX . "," . centerY . ")")
+    radius := 10
+    step := 2
+    threshold := 50
+
+    maxGradient := 0
+    bestX := centerX
+    bestY := centerY
+
+    x := centerX - radius
+    while (x <= centerX + radius) {
+        y := centerY - radius
+        while (y <= centerY + radius) {
+            try {
+                color1 := PixelGetColor(x, y, "RGB")
+                color2 := PixelGetColor(x + step, y, "RGB")
+                color3 := PixelGetColor(x, y + step, "RGB")
+
+                gradX := BB_colorDifference(color1, color2)
+                gradY := BB_colorDifference(color1, color3)
+                totalGrad := gradX + gradY
+
+                if (totalGrad > maxGradient && totalGrad > threshold) {
+                    maxGradient := totalGrad
+                    bestX := x
+                    bestY := y
+                }
+            } catch {
+                ; Skip out-of-bounds or errors
+            }
+            y += step
+        }
+        x += step
+    }
+
+    if (maxGradient > threshold) {
+        FoundX := bestX
+        FoundY := bestY
+        BB_updateStatusAndLog("Edge found at (" . FoundX . "," . FoundY . ") with gradient " . maxGradient)
+        return true
+    }
+    BB_updateStatusAndLog("No significant edges detected")
+    return false
+}
+
+; Pixel Grid Pattern Matching 
+BB_matchPixelGrid(centerX, centerY, &FoundX, &FoundY) {
+    BB_updateStatusAndLog("Performing pixel grid pattern match around (" . centerX . "," . centerY . ")")
+    gridSize := 5
+    tolerance := 100
+    requiredMatches := 3
+
+    baseColor := PixelGetColor(centerX, centerY, "RGB")
+    matches := 0
+
+    x := centerX - (gridSize // 2)
+    while (x <= centerX + (gridSize // 2)) {
+        y := centerY - (gridSize // 2)
+        while (y <= centerY + (gridSize // 2)) {
+            try {
+                color := PixelGetColor(x, y, "RGB")
+                if (BB_isColorSimilar(color, baseColor, tolerance)) {
+                    matches++
+                }
+            } catch {
+                ; Skip errors
+            }
+            y++
+        }
+        x++
+    }
+
+    if (matches >= requiredMatches) {
+        FoundX := centerX
+        FoundY := centerY
+        BB_updateStatusAndLog("Grid pattern matched with " . matches . " similar pixels")
+        return true
+    }
+    BB_updateStatusAndLog("Grid pattern not matched (" . matches . " similar pixels)")
+    return false
+}
+
+; Color Difference 
+BB_colorDifference(color1, color2) {
+    r1 := (color1 >> 16) & 0xFF
+    g1 := (color1 >> 8) & 0xFF
+    b1 := color1 & 0xFF
+    r2 := (color2 >> 16) & 0xFF
+    g2 := (color2 >> 8) & 0xFF
+    b2 := color2 & 0xFF
+    return Abs(r1 - r2) + Abs(g1 - g2) + Abs(b1 - b2)
 }
 
 ; Helper function: Verify if a pixel is part of a color cluster (to avoid false positives)
