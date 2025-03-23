@@ -26,7 +26,7 @@ if !A_IsAdmin {
 }
 
 ; ===================== GLOBAL VARIABLES =====================
-global BB_VERSION := "1.2.4"                  ; Script version
+global BB_VERSION := "1.2.5"                  ; Script version
 global BB_running := false                    ; Script running state
 global BB_paused := false                     ; Script paused state
 global BB_automationState := "Idle"           ; State machine: Idle, DisableAutomine, GoToTop, TeleportToArea4, Shopping, TeleportToArea5, EnableAutomine, Error
@@ -44,7 +44,7 @@ global BB_CONFIG_FILE := A_ScriptDir "\mining_config.ini"  ; Config file path
 global BB_ENABLE_LOGGING := true              ; Logging toggle
 global BB_TEMPLATE_FOLDER := A_ScriptDir . "\mining_templates"
 global BB_BACKUP_TEMPLATE_FOLDER := A_ScriptDir "\backup_templates"  ; Backup folder for templates
-global BB_WINDOW_TITLE := "Pet Simulator 99"  ; Updated to match likely window title
+global BB_WINDOW_TITLE := IniRead(BB_CONFIG_FILE, "Window", "WINDOW_TITLE", "Roblox")
 global BB_EXCLUDED_TITLES := []               ; Titles to exclude from targeting
 global BB_TEMPLATES := Map()                  ; Map of template names to filenames
 global BB_missingTemplatesReported := Map()   ; Tracks reported missing templates
@@ -325,29 +325,19 @@ BB_httpDownload(url, dest) {
 }
 
 BB_robustWindowActivation(hwnd) {
-    methods := [
-        {name: "Standard Activation", fn: () => WinActivate(hwnd)},
-        {name: "Focus Control", fn: () => ControlFocus("", hwnd)},
-        {name: "Alt-Tab Sequence", fn: () => (SendInput("{Alt down}{Tab}{Tab}{Alt up}"), Sleep(300))}
-    ]
-    for method in methods {
-        try {
-            startTime := A_TickCount
-            method.fn()
-            if WinWaitActive("ahk_id " . hwnd, , 2) {
-                elapsed := A_TickCount - startTime
-                BB_performanceData[method.name] := BB_performanceData.Has(method.name) ? (BB_performanceData[method.name] + elapsed) / 2 : elapsed
-                BB_updateStatusAndLog("Window activated using " . method.name . " (" . elapsed . "ms)")
-                return true
-            }
-        } catch as err {
-            BB_updateStatusAndLog("Activation method failed: " . method.name . " - " . err.Message, true)
-            Sleep(500)
-            continue
+    try {
+        WinActivate(hwnd)
+        if WinWaitActive("ahk_id " . hwnd, , 2) {  ; Wait up to 2 seconds
+            BB_updateStatusAndLog("Window activated successfully: " . hwnd)
+            return true
+        } else {
+            BB_updateStatusAndLog("Window activation timed out: " . hwnd, true)
+            return false
         }
+    } catch as err {
+        BB_updateStatusAndLog("Window activation failed: " . hwnd . " - " . err.Message, true, true)
+        return false
     }
-    BB_updateStatusAndLog("All window activation methods failed", true, true)
-    return false
 }
 
 BB_clickAt(x, y) {
@@ -632,31 +622,27 @@ BB_updateActiveWindows() {
     }
     
     BB_active_windows := []
-    activeHwnd := WinGetID("A")  ; Get the currently active window
-    windows := WinGetList("ahk_exe RobloxPlayerBeta.exe")
+    try {
+        winList := WinGetList()  ; Get all windows
+    } catch {
+        BB_updateStatusAndLog("Failed to retrieve window list", true, true)
+        return BB_active_windows
+    }
     
-    for hwnd in windows {
+    activeHwnd := WinGetID("A")  ; Get the currently active window
+    for hwnd in winList {
         try {
             title := WinGetTitle(hwnd)
-            processName := WinGetProcessName(hwnd)
-            if (processName != "RobloxPlayerBeta.exe") {
-                BB_updateStatusAndLog("Skipped window: " . title . " (process: " . processName . ")")
-                continue
+            if (InStr(title, "Roblox") && !BB_hasExcludedTitle(title)) {  ; Match "Roblox" in title
+                BB_active_windows.Push(hwnd)
+                BB_updateStatusAndLog("Found Roblox window: " . title . " (hwnd: " . hwnd . ", active: " . (hwnd = activeHwnd ? "Yes" : "No") . ")")
             }
-            if (!InStr(title, BB_WINDOW_TITLE) || BB_hasExcludedTitle(title)) {
-                BB_updateStatusAndLog("Skipped window: " . title . " (does not match criteria)")
-                continue
-            }
-            
-            ; Add the window to the list, prioritizing the active window
-            BB_active_windows.Push(hwnd)
-            BB_updateStatusAndLog("Found Roblox window: " . title . " (hwnd: " . hwnd . ", process: " . processName . ") (active: " . (hwnd = activeHwnd ? "Yes" : "No") . ")")
         } catch as err {
             BB_updateStatusAndLog("Error checking window " . hwnd . ": " . err.Message, true, true)
         }
     }
     
-    ; Sort windows to prioritize the active one
+    ; Prioritize the active window
     if (BB_active_windows.Length > 1 && activeHwnd) {
         prioritized := []
         for hwnd in BB_active_windows {
