@@ -28,7 +28,7 @@ if !A_IsAdmin {
 }
 
 ; ===================== GLOBAL VARIABLES =====================
-global BB_VERSION := "1.5.0"
+global BB_VERSION := "1.5.5"
 global BB_running := false
 global BB_paused := false
 global BB_lastGameStateReset := 0
