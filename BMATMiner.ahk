@@ -1,78 +1,78 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 ; 🐝 BeeBrained's PS99 Mining Event Automation 🐝
-; Last Updated: March 22, 2025
+; Last Updated: March 23, 2025
 ;
 ; == Testing Instructions ==
 ; 1. Ensure Roblox and Pet Simulator 99 are installed and running.
 ; 2. Place the script in a folder with write permissions (e.g., C:\Apps\Automation Stuff).
 ; 3. Run the script as administrator to ensure proper window activation.
-; 4. Press F1 to start the automation. Use F2 to stop, P to pause/resume, F3 to toggle explosives, and Esc to exit.
+; 4. The script auto-starts, assuming you're in Area 5 with automining active. Use F2 to stop, P to pause/resume, F3 to toggle explosives, and Esc to exit.
 ; 5. Monitor the GUI and log file (mining_log.txt) for errors.
 ; 6. If templates fail to validate, ensure an internet connection and check the GitHub repository for the latest template files.
 ;
 ; == Known Issues ==
-; - Template matching may fail if the game resolution or UI scaling changes. Adjust templates or confidence levels in BB_smartTemplateMatch if needed.
-; - Window activation may fail on some systems. Ensure Roblox is not minimized and try running the script as administrator.
-; - The script assumes the default Roblox hotkeys (e.g., 't' for teleport, 'f' for automine). Update the config if your hotkeys differ.
-; - The reconnect feature in BB_resetGameState may not work if Roblox is not set up to handle URL launches. Manual intervention may be required.
-; - Screenshot functionality is disabled (placeholder left in BB_updateStatusAndLog for future implementation).
+; - Template matching may fail if game resolution or UI scaling changes. Adjust templates or confidence levels in BB_smartTemplateMatch if needed.
+; - Window activation may fail on some systems. Ensure Roblox is not minimized and run as admin.
+; - Assumes default Roblox hotkeys ('t' for teleport, 'f' for automine). Update config if different.
+; - Reconnect in BB_resetGameState may need manual intervention if Roblox URL launches aren’t set up.
+; - Screenshot functionality is disabled (placeholder in BB_updateStatusAndLog).
 
 ; ===================== Run as Admin =====================
 
 if !A_IsAdmin {
-    Run("*RunAs " . A_ScriptFullPath)  ; Restart as admin if not already
+    Run("*RunAs " . A_ScriptFullPath)
     ExitApp()
 }
 
 ; ===================== GLOBAL VARIABLES =====================
-global BB_VERSION := "1.2.5"                  ; Script version
-global BB_running := false                    ; Script running state
-global BB_paused := false                     ; Script paused state
-global BB_automationState := "Idle"           ; State machine: Idle, DisableAutomine, GoToTop, TeleportToArea4, Shopping, TeleportToArea5, EnableAutomine, Error
-global BB_stateHistory := []                  ; Track state transitions for debugging
-global BB_CLICK_DELAY_MAX := 1500             ; Maximum click delay (ms)
-global BB_CLICK_DELAY_MIN := 500              ; Minimum click delay (ms)
-global BB_INTERACTION_DURATION := 5000        ; Duration for interactions (ms)
-global BB_CYCLE_INTERVAL := 60000             ; Interval between automation cycles (ms)
-global BB_ENABLE_EXPLOSIVES := false          ; Explosives feature toggle
-global BB_BOMB_INTERVAL := 10000              ; Bomb usage interval (ms)
-global BB_TNT_CRATE_INTERVAL := 30000         ; TNT crate usage interval (ms)
-global BB_TNT_BUNDLE_INTERVAL := 15000        ; TNT bundle usage interval (ms)
-global BB_logFile := A_ScriptDir "\mining_log.txt"  ; Log file path
-global BB_CONFIG_FILE := A_ScriptDir "\mining_config.ini"  ; Config file path
-global BB_ENABLE_LOGGING := true              ; Logging toggle
+global BB_VERSION := "1.4.0"
+global BB_running := false
+global BB_paused := false
+global BB_automationState := "Idle"
+global BB_stateHistory := []
+global BB_CLICK_DELAY_MAX := 1500
+global BB_CLICK_DELAY_MIN := 500
+global BB_INTERACTION_DURATION := 5000
+global BB_CYCLE_INTERVAL := 180000
+global BB_ENABLE_EXPLOSIVES := false
+global BB_BOMB_INTERVAL := 10000
+global BB_TNT_CRATE_INTERVAL := 30000
+global BB_TNT_BUNDLE_INTERVAL := 15000
+global BB_logFile := A_ScriptDir "\mining_log.txt"
+global BB_CONFIG_FILE := A_ScriptDir "\mining_config.ini"
+global BB_ENABLE_LOGGING := true
 global BB_TEMPLATE_FOLDER := A_ScriptDir . "\mining_templates"
-global BB_BACKUP_TEMPLATE_FOLDER := A_ScriptDir "\backup_templates"  ; Backup folder for templates
+global BB_BACKUP_TEMPLATE_FOLDER := A_ScriptDir "\backup_templates"
 global BB_WINDOW_TITLE := IniRead(BB_CONFIG_FILE, "Window", "WINDOW_TITLE", "Roblox")
-global BB_EXCLUDED_TITLES := []               ; Titles to exclude from targeting
-global BB_TEMPLATES := Map()                  ; Map of template names to filenames
-global BB_missingTemplatesReported := Map()   ; Tracks reported missing templates
-global BB_TEMPLATE_RETRIES := 3               ; Number of retries for template matching
-global BB_FAILED_INTERACTION_COUNT := 0       ; Count of consecutive failed interactions
-global BB_MAX_FAILED_INTERACTIONS := 5        ; Max failed interactions before stopping
-global BB_ANTI_AFK_INTERVAL := 300000         ; Anti-AFK interval (ms)
-global BB_RECONNECT_CHECK_INTERVAL := 10000   ; Reconnect check interval (ms)
-global BB_active_windows := []                ; List of active Roblox windows
-global BB_last_window_check := 0              ; Timestamp of last window check
-global BB_myGUI := ""                         ; GUI object
-global BB_BOMB_HOTKEY := "^b"                 ; Hotkey for bombs (Ctrl+B)
-global BB_TNT_CRATE_HOTKEY := "^t"            ; Hotkey for TNT crates (Ctrl+T)
-global BB_TNT_BUNDLE_HOTKEY := "^n"           ; Hotkey for TNT bundles (Ctrl+N)
-global BB_TELEPORT_HOTKEY := "t"              ; Hotkey for teleport menu
-global BB_MAX_BUY_ATTEMPTS := 6               ; Maximum number of buy buttons to click
-global BB_isAutofarming := false              ; Tracks autofarm state
-global BB_lastBombStatus := "Idle"            ; Tracks last bomb usage
-global BB_lastTntCrateStatus := "Idle"        ; Tracks last TNT crate usage
-global BB_lastTntBundleStatus := "Idle"       ; Tracks last TNT bundle usage
-global BB_currentArea := "Unknown"            ; Tracks current game area
-global BB_merchantState := "Not Interacted"   ; Tracks merchant interaction state
-global BB_lastError := "None"                 ; Tracks last error message
-global BB_validTemplates := 0                 ; Tracks number of valid templates
-global BB_totalTemplates := 0                 ; Tracks total number of templates
-global BB_SAFE_MODE := false                  ; Safe mode for testing
-global BB_imageCache := Map()                 ; Cache for image search results
-global BB_performanceData := Map()            ; Track operation times for adaptive timing
+global BB_EXCLUDED_TITLES := []
+global BB_TEMPLATES := Map()
+global BB_missingTemplatesReported := Map()
+global BB_TEMPLATE_RETRIES := 3
+global BB_FAILED_INTERACTION_COUNT := 0
+global BB_MAX_FAILED_INTERACTIONS := 5
+global BB_ANTI_AFK_INTERVAL := 300000
+global BB_RECONNECT_CHECK_INTERVAL := 10000
+global BB_active_windows := []
+global BB_last_window_check := 0
+global BB_myGUI := ""
+global BB_BOMB_HOTKEY := "^b"
+global BB_TNT_CRATE_HOTKEY := "^t"
+global BB_TNT_BUNDLE_HOTKEY := "^n"
+global BB_TELEPORT_HOTKEY := "t"
+global BB_MAX_BUY_ATTEMPTS := 6
+global BB_isAutofarming := false
+global BB_lastBombStatus := "Idle"
+global BB_lastTntCrateStatus := "Idle"
+global BB_lastTntBundleStatus := "Idle"
+global BB_currentArea := "Unknown"
+global BB_merchantState := "Not Interacted"
+global BB_lastError := "None"
+global BB_validTemplates := 0
+global BB_totalTemplates := 0
+global BB_SAFE_MODE := false
+global BB_imageCache := Map()
+global BB_performanceData := Map()
 
 ; ===================== DEFAULT CONFIGURATION =====================
 
@@ -80,7 +80,7 @@ defaultIni := "
 (
 [Timing]
 INTERACTION_DURATION=5000
-CYCLE_INTERVAL=60000
+CYCLE_INTERVAL=180000
 CLICK_DELAY_MIN=500
 CLICK_DELAY_MAX=1500
 ANTI_AFK_INTERVAL=300000
@@ -99,7 +99,6 @@ SAFE_MODE=false
 
 [Templates]
 automine_button=automine_button.png
-go_to_top_button=go_to_top_button.png
 teleport_button=teleport_button.png
 area_4_button=area_4_button.png
 area_5_button=area_5_button.png
@@ -141,7 +140,7 @@ BB_setState(newState) {
 BB_updateStatusAndLog(message, updateGUI := true, isError := false, takeScreenshot := false) {
     global BB_ENABLE_LOGGING, BB_logFile, BB_myGUI, BB_isAutofarming, BB_currentArea, BB_merchantState, BB_lastError
     global BB_lastBombStatus, BB_lastTntCrateStatus, BB_lastTntBundleStatus, BB_validTemplates, BB_totalTemplates
-    static firstRun := true  ; Track if this is the first log entry of the run
+    static firstRun := true
     
     if BB_ENABLE_LOGGING {
         timestamp := FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss")
@@ -149,9 +148,9 @@ BB_updateStatusAndLog(message, updateGUI := true, isError := false, takeScreensh
         
         if firstRun {
             try {
-                FileDelete(BB_logFile)  ; Overwrite log file on first call
+                FileDelete(BB_logFile)
             } catch {
-                ; Ignore if file doesn't exist yet
+                ; Ignore if file doesn't exist
             }
             firstRun := false
         }
@@ -160,11 +159,6 @@ BB_updateStatusAndLog(message, updateGUI := true, isError := false, takeScreensh
     
     if isError
         BB_lastError := message
-    
-    ; Placeholder for screenshot functionality (disabled as per your script)
-    ; if takeScreenshot {
-    ;     BB_takeScreenshot()
-    ; }
     
     if updateGUI && IsObject(BB_myGUI) {
         BB_myGUI["Status"].Text := (BB_running ? (BB_paused ? "Paused" : "Running") : "Idle")
@@ -196,7 +190,6 @@ BB_clearLog(*) {
     BB_updateStatusAndLog("Log file cleared")
 }
 
-; ===================== UTILITY FUNCTIONS (REVISED) =====================
 BB_validateImage(filePath) {
     if !FileExist(filePath) {
         return "File does not exist"
@@ -204,15 +197,11 @@ BB_validateImage(filePath) {
     if (StrLower(SubStr(filePath, -3)) != "png") {
         return "Invalid file extension"
     }
-
-    ; Check file size
     fileSize := FileGetSize(filePath)
     if (fileSize < 8) {
         BB_updateStatusAndLog("File too small to be a PNG: " . fileSize . " bytes (Path: " . filePath . ")", true)
         return "File too small"
     }
-
-    ; Skip FileOpen check due to persistent "Invalid parameter(s)" errors
     BB_updateStatusAndLog("File assumed valid (skipped FileOpen check): " . filePath)
     return "Assumed Valid (Skipped FileOpen)"
 }
@@ -288,27 +277,22 @@ BB_httpDownload(url, dest) {
     BB_updateStatusAndLog("Attempting PowerShell download for: " . url)
     psCommand := "(New-Object System.Net.WebClient).DownloadFile('" . url . "','" . dest . "')"
     try {
-        ; Ensure the destination directory exists
         SplitPath(dest, , &dir)
         if !DirExist(dir) {
             DirCreate(dir)
             BB_updateStatusAndLog("Created directory: " . dir)
         }
-        
-        ; Run PowerShell command to download
         exitCode := RunWait("PowerShell -NoProfile -Command " . Chr(34) . psCommand . Chr(34), , "Hide")
         if (exitCode != 0) {
             throw Error("PowerShell exited with code " . exitCode)
         }
-        
-        ; Wait for the file to be fully written
-        maxWait := 10  ; Wait up to 10 seconds
+        maxWait := 10
         loop maxWait {
             if FileExist(dest) {
                 fileSize := FileGetSize(dest)
                 if (fileSize > 0) {
                     BB_updateStatusAndLog("Download succeeded using PowerShell => " . dest . " (Size: " . fileSize . " bytes)")
-                    Sleep(1000)  ; Additional 1-second delay to ensure file is released
+                    Sleep(1000)
                     return true
                 }
             }
@@ -327,7 +311,7 @@ BB_httpDownload(url, dest) {
 BB_robustWindowActivation(hwnd) {
     try {
         WinActivate(hwnd)
-        if WinWaitActive("ahk_id " . hwnd, , 2) {  ; Wait up to 2 seconds
+        if WinWaitActive("ahk_id " . hwnd, , 2) {
             BB_updateStatusAndLog("Window activated successfully: " . hwnd)
             return true
         } else {
@@ -363,13 +347,12 @@ BB_clickAt(x, y) {
     return true
 }
 
-
 downloadWithStatus(url, dest) {
     try {
         if (!BB_httpDownload(url, dest)) {
             throw Error("Download failed")
         }
-        Sleep(1000)  ; Reduced from 5000 to 1000 (1 second)
+        Sleep(1000)
         fileSize := FileGetSize(dest)
         BB_updateStatusAndLog("Downloaded file size: " . fileSize . " bytes")
         if (fileSize < 8) {
@@ -384,6 +367,7 @@ downloadWithStatus(url, dest) {
         throw err
     }
 }
+
 StrJoin(arr, delimiter) {
     result := ""
     for i, value in arr
@@ -407,27 +391,28 @@ BB_loadConfig() {
         BB_updateStatusAndLog("Created default mining_config.ini")
     }
 
-    ; Ensure folders exist
     if !DirExist(BB_TEMPLATE_FOLDER)
         DirCreate(BB_TEMPLATE_FOLDER)
     if !DirExist(BB_BACKUP_TEMPLATE_FOLDER)
         DirCreate(BB_BACKUP_TEMPLATE_FOLDER)
 
-    ; Reset template counters
     BB_validTemplates := 0
     BB_totalTemplates := 0
 
-	; Download templates
 	for templateName, fileName in Map(
 		"automine_button", "automine_button.png",
-		"go_to_top_button", "go_to_top_button.png",
 		"teleport_button", "teleport_button.png",
 		"area_4_button", "area_4_button.png",
 		"area_5_button", "area_5_button.png",
 		"mining_merchant", "mining_merchant.png",
 		"buy_button", "buy_button.png",
+		"merchant_window", "merchant_window.png",
 		"autofarm_on", "autofarm_on.png",
-		"autofarm_off", "autofarm_off.png"
+		"autofarm_off", "autofarm_off.png",
+		"go_to_top_button", "go_to_top_button.png",
+		"error_message", "error_message.png",        ; Added
+		"error_message_alt1", "error_message_alt1.png",  ; Added
+		"connection_lost", "connection_lost.png"     ; Added
 	) {
 		BB_downloadTemplate(templateName, fileName)
 		BB_TEMPLATES[templateName] := fileName
@@ -435,9 +420,8 @@ BB_loadConfig() {
 
     BB_updateStatusAndLog("Template validation summary: " . BB_validTemplates . "/" . BB_totalTemplates . " templates are valid")
 
-    ; Load other settings
     BB_INTERACTION_DURATION := IniRead(BB_CONFIG_FILE, "Timing", "INTERACTION_DURATION", 5000)
-    BB_CYCLE_INTERVAL := IniRead(BB_CONFIG_FILE, "Timing", "CYCLE_INTERVAL", 60000)
+    BB_CYCLE_INTERVAL := IniRead(BB_CONFIG_FILE, "Timing", "CYCLE_INTERVAL", 180000)
     BB_CLICK_DELAY_MIN := IniRead(BB_CONFIG_FILE, "Timing", "CLICK_DELAY_MIN", 500)
     BB_CLICK_DELAY_MAX := IniRead(BB_CONFIG_FILE, "Timing", "CLICK_DELAY_MAX", 1500)
     BB_ANTI_AFK_INTERVAL := IniRead(BB_CONFIG_FILE, "Timing", "ANTI_AFK_INTERVAL", 300000)
@@ -446,7 +430,6 @@ BB_loadConfig() {
     BB_TNT_CRATE_INTERVAL := IniRead(BB_CONFIG_FILE, "Timing", "TNT_CRATE_INTERVAL", 30000)
     BB_TNT_BUNDLE_INTERVAL := IniRead(BB_CONFIG_FILE, "Timing", "TNT_BUNDLE_INTERVAL", 15000)
 
-    ; Adaptive timing adjustment based on performance data
     if BB_performanceData.Has("ClickAt") {
         avgClickTime := BB_performanceData["ClickAt"]
         BB_CLICK_DELAY_MIN := Max(500, avgClickTime - 100)
@@ -479,16 +462,14 @@ BB_loadConfig() {
 
 BB_setupGUI() {
     global BB_myGUI, BB_BOMB_HOTKEY, BB_TNT_CRATE_HOTKEY, BB_TNT_BUNDLE_HOTKEY, BB_VERSION
-    BB_myGUI := Gui("+AlwaysOnTop", "🐝 BeeBrained’s PS99 Mining Event Macro v" . BB_VERSION . " 🐝")
+    BB_myGUI := Gui("", "🐝 BeeBrained’s PS99 Mining Event Macro v" . BB_VERSION . " 🐝")  ; Removed +AlwaysOnTop
     BB_myGUI.OnEvent("Close", BB_exitApp)
     
-    ; Header
     BB_myGUI.Add("Text", "x10 y10 w400 h20 Center", "🐝 BeeBrained’s PS99 Mining Event Macro v" . BB_VERSION . " 🐝")
     hotkeyText := "Hotkeys: F1 (Start) | F2 (Stop) | P (Pause) | F3 (Explosives) | Esc (Exit)"
     hotkeyText .= " | " . BB_BOMB_HOTKEY . " (Bomb) | " . BB_TNT_CRATE_HOTKEY . " (TNT Crate) | " . BB_TNT_BUNDLE_HOTKEY . " (TNT Bundle)"
     BB_myGUI.Add("Text", "x10 y30 w400 h20 Center", hotkeyText)
     
-    ; Script Status Section
     BB_myGUI.Add("GroupBox", "x10 y60 w400 h120", "Script Status")
     BB_myGUI.Add("Text", "x20 y80 w180 h20", "Status:")
     BB_myGUI.Add("Text", "x200 y80 w200 h20", "Idle").Name := "Status"
@@ -501,14 +482,12 @@ BB_setupGUI() {
     BB_myGUI.Add("Text", "x20 y160 w180 h20", "Templates Valid:")
     BB_myGUI.Add("Text", "x200 y160 w200 h20", "0/0").Name := "TemplateStatus"
     
-    ; Game State Section
     BB_myGUI.Add("GroupBox", "x10 y190 w400 h80", "Game State")
     BB_myGUI.Add("Text", "x20 y210 w180 h20", "Current Area:")
     BB_myGUI.Add("Text", "x200 y210 w200 h20", "Unknown").Name := "CurrentArea"
     BB_myGUI.Add("Text", "x20 y230 w180 h20", "Merchant Interaction:")
     BB_myGUI.Add("Text", "x200 y230 w200 h20", "Not Interacted").Name := "MerchantState"
     
-    ; Explosives Status Section
     BB_myGUI.Add("GroupBox", "x10 y280 w400 h80", "Explosives Status")
     BB_myGUI.Add("Text", "x20 y300 w180 h20", "Bomb:")
     BB_myGUI.Add("Text", "x200 y300 w200 h20", "Idle").Name := "BombStatus"
@@ -517,14 +496,12 @@ BB_setupGUI() {
     BB_myGUI.Add("Text", "x20 y340 w180 h20", "TNT Bundle:")
     BB_myGUI.Add("Text", "x200 y340 w200 h20", "Idle").Name := "TntBundleStatus"
     
-    ; Last Action/Error Section
     BB_myGUI.Add("GroupBox", "x10 y370 w400 h100", "Last Action/Error")
     BB_myGUI.Add("Text", "x20 y390 w180 h20", "Last Action:")
     BB_myGUI.Add("Text", "x200 y390 w200 h40 Wrap", "None").Name := "LastAction"
     BB_myGUI.Add("Text", "x20 y430 w180 h20", "Last Error:")
     BB_myGUI.Add("Text", "x200 y430 w200 h40 Wrap cRed", "None").Name := "LastError"
     
-    ; Buttons
     BB_myGUI.Add("Button", "x10 y480 w120 h30", "Reload Config").OnEvent("Click", BB_loadConfigFromFile)
     BB_myGUI.Add("Button", "x290 y480 w120 h30", "Clear Log").OnEvent("Click", BB_clearLog)
     
@@ -533,7 +510,6 @@ BB_setupGUI() {
 
 ; ===================== HOTKEYS =====================
 
-Hotkey("F1", BB_startAutomation)
 Hotkey("F2", BB_stopAutomation)
 Hotkey("p", BB_togglePause)
 Hotkey("F3", BB_toggleExplosives)
@@ -542,20 +518,16 @@ Hotkey("Esc", BB_exitApp)
 ; ===================== CORE FUNCTIONS =====================
 
 BB_startAutomation(*) {
-    global BB_running, BB_paused, BB_currentArea, BB_automationState, BB_SAFE_MODE
+    global BB_running, BB_paused, BB_currentArea, BB_automationState, BB_ENABLE_EXPLOSIVES
     if BB_running {
-        BB_updateStatusAndLog("Already running, ignoring F1 press")
+        BB_updateStatusAndLog("Already running, ignoring start request")
         return
-    }
-    if BB_SAFE_MODE {
-        BB_updateStatusAndLog("Running in safe mode - limited functionality")
     }
     BB_running := true
     BB_paused := false
-    BB_currentArea := "Unknown"
+    BB_currentArea := "Area 5"
     BB_automationState := "Idle"
     BB_updateStatusAndLog("Running - Starting Mining Automation")
-    SetTimer(BB_antiAFKLoop, BB_ANTI_AFK_INTERVAL)
     SetTimer(BB_reconnectCheckLoop, BB_RECONNECT_CHECK_INTERVAL)
     if BB_ENABLE_EXPLOSIVES {
         SetTimer(BB_bombLoop, BB_BOMB_INTERVAL)
@@ -568,8 +540,7 @@ BB_startAutomation(*) {
         SetTimer(BB_tntBundleLoop, 0)
         BB_updateStatusAndLog("Explosives timers disabled")
     }
-    BB_miningAutomationLoop()  ; Run the first cycle immediately
-    SetTimer(BB_miningAutomationLoop, 1000)
+    SetTimer(BB_miningAutomationLoop, 1000)  ; Start the loop with a 1-second interval
 }
 
 BB_stopAutomation(*) {
@@ -580,7 +551,6 @@ BB_stopAutomation(*) {
     BB_merchantState := "Not Interacted"
     BB_automationState := "Idle"
     SetTimer(BB_miningAutomationLoop, 0)
-    SetTimer(BB_antiAFKLoop, 0)
     SetTimer(BB_reconnectCheckLoop, 0)
     SetTimer(BB_bombLoop, 0)
     SetTimer(BB_tntCrateLoop, 0)
@@ -623,17 +593,17 @@ BB_updateActiveWindows() {
     
     BB_active_windows := []
     try {
-        winList := WinGetList()  ; Get all windows
+        winList := WinGetList()
     } catch {
         BB_updateStatusAndLog("Failed to retrieve window list", true, true)
         return BB_active_windows
     }
     
-    activeHwnd := WinGetID("A")  ; Get the currently active window
+    activeHwnd := WinGetID("A")
     for hwnd in winList {
         try {
             title := WinGetTitle(hwnd)
-            if (InStr(title, "Roblox") && !BB_hasExcludedTitle(title)) {  ; Match "Roblox" in title
+            if (InStr(title, "Roblox") && !BB_hasExcludedTitle(title)) {
                 BB_active_windows.Push(hwnd)
                 BB_updateStatusAndLog("Found Roblox window: " . title . " (hwnd: " . hwnd . ", active: " . (hwnd = activeHwnd ? "Yes" : "No") . ")")
             }
@@ -642,7 +612,6 @@ BB_updateActiveWindows() {
         }
     }
     
-    ; Prioritize the active window
     if (BB_active_windows.Length > 1 && activeHwnd) {
         prioritized := []
         for hwnd in BB_active_windows {
@@ -673,42 +642,40 @@ BB_hasExcludedTitle(title) {
 
 BB_checkForError() {
     global BB_automationState, BB_FAILED_INTERACTION_COUNT, BB_currentArea, BB_merchantState
-    FoundX := "", FoundY := ""
+    FoundX := ""
+    FoundY := ""
     errorTypes := ["error_message", "error_message_alt1", "connection_lost"]
     errorDetected := false
     errorType := ""
-    
-    ; Check for errors on screen
+
     for type in errorTypes {
         if BB_smartTemplateMatch(type, &FoundX, &FoundY) {
             errorDetected := true
             errorType := type
             break
+        } else {
+            BB_updateStatusAndLog("Template '" . type . "' not found during error check", true, true)
         }
     }
 
     if errorDetected {
-        BB_updateStatusAndLog("Error detected (" . errorType . ")", true, true, true)  ; Take screenshot on error
+        BB_updateStatusAndLog("Error detected (" . errorType . ")", true, true, true)
         
-        ; Define recovery actions for each state
         errorActions := Map(
             "DisableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_checkAutofarming()),
-            "GoToTop", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_goToTop()),
             "TeleportToArea4", () => (SendInput("{Esc}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu()),
             "Shopping", () => (SendInput("{Esc}"), Sleep(500), BB_interactWithMerchant()),
             "TeleportToArea5", () => (SendInput("{Esc}"), Sleep(500), SendInput("{" . BB_TELEPORT_HOTKEY . "}"), Sleep(1000), BB_openTeleportMenu()),
             "EnableAutomine", () => (SendInput("{f down}"), Sleep(100), SendInput("{f up}"), Sleep(500), BB_checkAutofarming()),
-            "Idle", () => (SendInput("{Space down}"), Sleep(100), SendInput("{Space up}"), Sleep(500))
+            "Idle", () => (SendInput("{Space down}"), Sleep(100), SendInput("{Space up}"), Sleep(500)),
+            "Mining", () => (SendInput("{Space down}"), Sleep(100), SendInput("{Space up}"), Sleep(500))
         )
 
-        ; Execute the recovery action
         action := errorActions.Has(BB_automationState) ? errorActions[BB_automationState] : errorActions["Idle"]
         actionResult := action()
         
-        ; Log the recovery attempt
         BB_updateStatusAndLog("Attempted recovery from error in state " . BB_automationState . " (Result: " . (actionResult ? "Success" : "Failed") . ")")
         
-        ; Increment failure count and check if we should stop
         BB_FAILED_INTERACTION_COUNT++
         if (BB_FAILED_INTERACTION_COUNT >= BB_MAX_FAILED_INTERACTIONS) {
             BB_updateStatusAndLog("Too many failed recoveries (" . BB_FAILED_INTERACTION_COUNT . "), attempting to reset game state", true, true)
@@ -728,7 +695,6 @@ BB_resetGameState() {
     global BB_currentArea, BB_merchantState, BB_isAutofarming, BB_automationState, BB_FAILED_INTERACTION_COUNT
     BB_updateStatusAndLog("Attempting to reset game state")
     
-    ; Close the game (if possible) and reopen it
     windows := BB_updateActiveWindows()
     for hwnd in windows {
         try {
@@ -740,29 +706,24 @@ BB_resetGameState() {
         }
     }
     
-    ; Wait for the game to close
     Sleep(5000)
     
-    ; Attempt to reopen Roblox (assuming the user has a shortcut or URL handler)
     try {
-        Run("roblox://placeId=8737890210")  ; Replace with actual PS99 game link if different
+        Run("roblox://placeId=8737890210")
         BB_updateStatusAndLog("Attempted to reopen Pet Simulator 99")
     } catch as err {
         BB_updateStatusAndLog("Failed to reopen Roblox: " . err.Message, true, true)
         return false
     }
     
-    ; Wait for the game to load
-    Sleep(30000)  ; Adjust based on typical load time
+    Sleep(30000)
     
-    ; Reset script state
     BB_currentArea := "Unknown"
     BB_merchantState := "Not Interacted"
     BB_isAutofarming := false
     BB_automationState := "Idle"
     BB_FAILED_INTERACTION_COUNT := 0
     
-    ; Check if the game reopened successfully
     windows := BB_updateActiveWindows()
     if (windows.Length > 0) {
         BB_updateStatusAndLog("Game state reset successful, resuming automation")
@@ -782,14 +743,13 @@ BB_checkForUpdates() {
         http.Send()
         if (http.Status != 200)
             throw Error("HTTP status " . http.Status . " received")
-        latestVersion := Trim(http.ResponseText, " `t`r`n")  ; Remove leading/trailing whitespace and newlines
+        latestVersion := Trim(http.ResponseText, " `t`r`n")
         BB_updateStatusAndLog("Current version: " . BB_VERSION . " | Remote version: " . latestVersion)
         if (!RegExMatch(latestVersion, "^\d+\.\d+\.\d+$")) {
             throw Error("Invalid version format: '" . latestVersion . "'")
         }
         if (latestVersion != BB_VERSION) {
             BB_updateStatusAndLog("New version available: " . latestVersion . " (current: " . BB_VERSION . ")")
-            ;MsgBox("A new version (" . latestVersion . ") is available! Please update the script.", "Update Available", 0x40)
         } else {
             BB_updateStatusAndLog("Script is up to date (version: " . BB_VERSION . ")")
         }
@@ -802,7 +762,8 @@ BB_checkForUpdates() {
 
 BB_checkAutofarming() {
     global BB_isAutofarming
-    FoundX := "", FoundY := ""
+    FoundX := ""
+    FoundY := ""
     
     if BB_smartTemplateMatch("autofarm_on", &FoundX, &FoundY) {
         BB_updateStatusAndLog("Autofarm is ON (green circle detected)")
@@ -821,7 +782,8 @@ BB_checkAutofarming() {
 }
 
 BB_disableAutomine() {
-    FoundX := "", FoundY := ""
+    FoundX := ""
+    FoundY := ""
     if BB_smartTemplateMatch("automine_button", &FoundX, &FoundY) {
         BB_clickAt(FoundX, FoundY)
         BB_updateStatusAndLog("Disabled automining")
@@ -832,28 +794,16 @@ BB_disableAutomine() {
     return false
 }
 
-BB_goToTop() {
-    FoundX := "", FoundY := ""
-    if BB_smartTemplateMatch("go_to_top_button", &FoundX, &FoundY) {
-        BB_clickAt(FoundX, FoundY)
-        BB_updateStatusAndLog("Clicked Go to Top")
-        Sleep(2000)
-        return true
-    }
-    BB_updateStatusAndLog("Failed to go to top", true)
-    return false
-}
-
 BB_openTeleportMenu() {
     global BB_TELEPORT_HOTKEY
-    FoundX := "", FoundY := ""
+    FoundX := ""
+    FoundY := ""
     if BB_smartTemplateMatch("teleport_button", &FoundX, &FoundY) {
         BB_clickAt(FoundX, FoundY)
         BB_updateStatusAndLog("Opened teleport menu")
         Sleep(1000)
         return true
     }
-    ; Fallback to keyboard shortcut
     SendInput("{" . BB_TELEPORT_HOTKEY . " down}")
     Sleep(100)
     SendInput("{" . BB_TELEPORT_HOTKEY . " up}")
@@ -869,7 +819,8 @@ BB_openTeleportMenu() {
 
 BB_teleportToArea(areaTemplate) {
     global BB_currentArea
-    FoundX := "", FoundY := ""
+    FoundX := ""
+    FoundY := ""
     if BB_smartTemplateMatch(areaTemplate, &FoundX, &FoundY) {
         BB_clickAt(FoundX, FoundY)
         BB_currentArea := (areaTemplate = "area_4_button") ? "Area 4" : (areaTemplate = "area_5_button") ? "Area 5" : "Unknown"
@@ -883,7 +834,8 @@ BB_teleportToArea(areaTemplate) {
 
 BB_interactWithMerchant() {
     global BB_merchantState
-    FoundX := "", FoundY := ""
+    FoundX := ""
+    FoundY := ""
     if BB_smartTemplateMatch("mining_merchant", &FoundX, &FoundY) {
         BB_clickAt(FoundX, FoundY)
         BB_merchantState := "Interacted"
@@ -898,7 +850,8 @@ BB_interactWithMerchant() {
 
 BB_buyMerchantItems() {
     global BB_MAX_BUY_ATTEMPTS, BB_merchantState
-    FoundX := "", FoundY := ""
+    FoundX := ""
+    FoundY := ""
     if !BB_smartTemplateMatch("merchant_window", &FoundX, &FoundY) {
         BB_merchantState := "Window Not Detected"
         BB_updateStatusAndLog("Merchant window not detected", true)
@@ -908,7 +861,8 @@ BB_buyMerchantItems() {
     searchArea := [FoundX, FoundY + 50, FoundX + 500, FoundY + 300]
     buyCount := 0
     while (buyCount < BB_MAX_BUY_ATTEMPTS) {
-        FoundX := "", FoundY := ""
+        FoundX := ""
+        FoundY := ""
         if BB_smartTemplateMatch("buy_button", &FoundX, &FoundY, searchArea) {
             BB_clickAt(FoundX, FoundY)
             BB_updateStatusAndLog("Clicked buy button " . (buyCount + 1))
@@ -924,7 +878,8 @@ BB_buyMerchantItems() {
 }
 
 BB_enableAutomine() {
-    FoundX := "", FoundY := ""
+    FoundX := ""
+    FoundY := ""
     if BB_smartTemplateMatch("automine_button", &FoundX, &FoundY) {
         BB_clickAt(FoundX, FoundY)
         BB_updateStatusAndLog("Enabled automining")
@@ -1038,11 +993,10 @@ BB_tntBundleLoop() {
 }
 
 ; ===================== STATE MACHINE AUTOMATION LOOP =====================
+
 BB_miningAutomationLoop() {
     global BB_running, BB_paused, BB_automationState, BB_FAILED_INTERACTION_COUNT, BB_MAX_FAILED_INTERACTIONS
-    global BB_currentArea, BB_merchantState, BB_isAutofarming, BB_SAFE_MODE
-    static wasAutofarming := false
-    static skippedActions := []
+    global BB_currentArea, BB_merchantState, BB_isAutofarming, BB_CYCLE_INTERVAL, BB_ENABLE_EXPLOSIVES
 
     if (!BB_running || BB_paused) {
         BB_updateStatusAndLog("Automation loop skipped (not running or paused)")
@@ -1055,151 +1009,85 @@ BB_miningAutomationLoop() {
         return
     }
 
-    BB_updateStatusAndLog("Starting automation cycle (" . windows.Length . " windows)")
+    BB_updateStatusAndLog("Starting automation cycle")
     for hwnd in windows {
         if (!BB_running || BB_paused) {
             BB_updateStatusAndLog("Automation loop interrupted")
             break
         }
-        BB_updateStatusAndLog("Processing window: " . hwnd)
         if !BB_robustWindowActivation(hwnd) {
             BB_FAILED_INTERACTION_COUNT++
             BB_updateStatusAndLog("Skipping window due to activation failure")
             continue
         }
 
-        ; Reset skipped actions for this cycle
-        if BB_SAFE_MODE
-            skippedActions := []
-
-        ; Check for errors before proceeding
         if BB_checkForError() {
             BB_setState("Error")
         }
 
         switch BB_automationState {
             case "Idle":
-                Sleep(IniRead(BB_CONFIG_FILE, "Timing", "CYCLE_INTERVAL", 60000))
-                wasAutofarming := BB_checkAutofarming()
-                if wasAutofarming {
-                    BB_updateStatusAndLog("Autofarming detected, proceeding to disable automine")
+                BB_currentArea := "Area 5"
+                if BB_checkAutofarming() {
                     BB_setState("DisableAutomine")
                 } else {
-                    BB_updateStatusAndLog("Not autofarming, proceeding to merchant steps")
-                    BB_setState("TeleportToArea4")
+                    BB_updateStatusAndLog("Autofarming not detected in Area 5, enabling it first")
+                    BB_enableAutomine()
                 }
             case "DisableAutomine":
-                if BB_SAFE_MODE {
-                    BB_updateStatusAndLog("Safe mode: Skipping automine disable")
-                    skippedActions.Push("DisableAutomine")
-                    BB_setState("GoToTop")
-                    continue
-                }
                 if BB_disableAutomine() {
-                    BB_setState("GoToTop")
-                } else {
-                    BB_FAILED_INTERACTION_COUNT++
-                    BB_setState("Error")
-                }
-            case "GoToTop":
-                if BB_SAFE_MODE {
-                    BB_updateStatusAndLog("Safe mode: Skipping go to top")
-                    skippedActions.Push("GoToTop")
-                    BB_setState("TeleportToArea4")
-                    continue
-                }
-                if BB_goToTop() {
                     BB_setState("TeleportToArea4")
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
                 }
             case "TeleportToArea4":
-                if BB_openTeleportMenu() {
-                    if BB_teleportToArea("area_4_button") {
-                        BB_setState("Shopping")
-                    } else {
-                        BB_FAILED_INTERACTION_COUNT++
-                        BB_setState("Error")
-                    }
+                if BB_openTeleportMenu() && BB_teleportToArea("area_4_button") {
+                    BB_setState("Shopping")
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
                 }
             case "Shopping":
-                if BB_SAFE_MODE {
-                    BB_updateStatusAndLog("Safe mode: Skipping merchant interaction")
-                    skippedActions.Push("Shopping")
+                if BB_interactWithMerchant() && BB_buyMerchantItems() {
+                    SendInput("{Esc}")
+                    Sleep(500)
                     BB_setState("TeleportToArea5")
-                    continue
-                }
-                if BB_interactWithMerchant() {
-                    if BB_buyMerchantItems() {
-                        BB_setState("TeleportToArea5")
-                    } else {
-                        BB_FAILED_INTERACTION_COUNT++
-                        BB_setState("Error")
-                    }
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
                 }
             case "TeleportToArea5":
-                if BB_openTeleportMenu() {
-                    if BB_teleportToArea("area_5_button") {
-                        BB_setState(wasAutofarming ? "EnableAutomine" : "Idle")
-                    } else {
-                        BB_FAILED_INTERACTION_COUNT++
-                        BB_setState("Error")
-                    }
+                if BB_openTeleportMenu() && BB_teleportToArea("area_5_button") {
+                    BB_setState("EnableAutomine")
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
                 }
             case "EnableAutomine":
-                if BB_SAFE_MODE {
-                    BB_updateStatusAndLog("Safe mode: Skipping automine enable")
-                    skippedActions.Push("EnableAutomine")
-                    BB_setState("Idle")
-                    continue
-                }
                 if BB_enableAutomine() {
-                    BB_setState("Idle")
+                    BB_setState("Mining")
                 } else {
                     BB_FAILED_INTERACTION_COUNT++
                     BB_setState("Error")
                 }
+            case "Mining":
+                BB_updateStatusAndLog("Mining in Area 5 for ~3 minutes")
+                Sleep(180000)
+                BB_setState("Idle")
             case "Error":
                 if (BB_FAILED_INTERACTION_COUNT >= BB_MAX_FAILED_INTERACTIONS) {
-                    BB_updateStatusAndLog("Too many failed interactions (" . BB_FAILED_INTERACTION_COUNT . "), stopping", true, true)
+                    BB_updateStatusAndLog("Too many failed interactions, stopping", true, true)
                     BB_stopAutomation()
                     return
                 }
                 BB_updateStatusAndLog("Recovering from error state")
                 BB_setState("Idle")
         }
-
-        if BB_automationState = "Idle" {
-            BB_updateStatusAndLog("Cycle completed for window: " . hwnd)
-            if BB_SAFE_MODE && skippedActions.Length > 0 {
-                BB_updateStatusAndLog("Safe mode summary: Skipped actions - " . StrJoin(skippedActions, ", "))
-            }
-            BB_FAILED_INTERACTION_COUNT := 0
-        }
     }
 }
 
 ; ===================== ANTI-AFK AND RECONNECT FUNCTIONS =====================
-
-BB_antiAFKLoop() {
-    global BB_running, BB_paused
-    if (!BB_running || BB_paused)
-        return
-    SendInput("{Space down}")
-    Sleep(100)
-    SendInput("{Space up}")
-    BB_updateStatusAndLog("Anti-AFK: Pressed space")
-}
 
 BB_reconnectCheckLoop() {
     global BB_running, BB_paused
@@ -1222,7 +1110,6 @@ BB_exitApp(*) {
     global BB_running
     BB_running := false
     SetTimer(BB_miningAutomationLoop, 0)
-    SetTimer(BB_antiAFKLoop, 0)
     SetTimer(BB_reconnectCheckLoop, 0)
     SetTimer(BB_bombLoop, 0)
     SetTimer(BB_tntCrateLoop, 0)
@@ -1234,7 +1121,6 @@ BB_exitApp(*) {
 BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
     global BB_TEMPLATES, BB_TEMPLATE_FOLDER, BB_TEMPLATE_RETRIES, BB_imageCache, BB_missingTemplatesReported
     
-    ; Check if the template exists in the templates map
     if (!BB_TEMPLATES.Has(templateName)) {
         if (!BB_missingTemplatesReported.Has(templateName)) {
             BB_updateStatusAndLog("Template '" . templateName . "' not found in BB_TEMPLATES", true, true)
@@ -1252,7 +1138,6 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
         return false
     }
     
-    ; Check cache first
     cacheKey := templateName . (searchArea ? StrJoin(searchArea, ",") : "")
     if (BB_imageCache.Has(cacheKey)) {
         cachedResult := BB_imageCache[cacheKey]
@@ -1265,15 +1150,12 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
         return false
     }
     
-    ; Set default search area to entire screen if not specified
     if (!searchArea) {
         searchArea := [0, 0, A_ScreenWidth, A_ScreenHeight]
     }
     
-    ; Retry loop for template matching
     loop BB_TEMPLATE_RETRIES {
         try {
-            ; Perform image search
             if (ImageSearch(&FoundX, &FoundY, searchArea[1], searchArea[2], searchArea[3], searchArea[4], "*" . 50 . " " . templateFile)) {
                 BB_updateStatusAndLog("Template '" . templateName . "' found at x=" . FoundX . ", y=" . FoundY)
                 BB_imageCache[cacheKey] := {success: true, x: FoundX, y: FoundY}
@@ -1282,7 +1164,7 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
         } catch as err {
             BB_updateStatusAndLog("ImageSearch failed for '" . templateName . "': " . err.Message, true, true)
         }
-        Sleep(500)  ; Wait before retrying
+        Sleep(500)
     }
     
     BB_updateStatusAndLog("Template '" . templateName . "' not found after " . BB_TEMPLATE_RETRIES . " attempts", true)
@@ -1290,27 +1172,17 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, searchArea := "") {
     return false
 }
 
-BB_testFileAccess() {
-    testPath := "C:\Apps\Automation Stuff\mining_templates\area_4_button.png"
-    if FileExist(testPath) {
-        BB_updateStatusAndLog("Testing file access for: " . testPath)
-        result := BB_validateImage(testPath)
-        BB_updateStatusAndLog("Test result: " . result)
-        MsgBox("Test result for " . testPath . ": " . result)
-    } else {
-        BB_updateStatusAndLog("Test file not found: " . testPath, true)
-        MsgBox("Please ensure " . testPath . " exists after a download attempt.")
-    }
-}
+; ===================== INITIALIZATION =====================
 
-; Replace the entire initialization block at the bottom with this:
 BB_setupGUI()
 BB_loadConfig()
 BB_checkForUpdates()
 
+Hotkey("F1", BB_startAutomation)  ; Add F1 to start automation
 Hotkey(BB_BOMB_HOTKEY, (*) => BB_useBomb())
 Hotkey(BB_TNT_CRATE_HOTKEY, (*) => BB_useTntCrate())
 Hotkey(BB_TNT_BUNDLE_HOTKEY, (*) => BB_useTntBundle())
 BB_updateStatusAndLog("Explosives hotkeys bound successfully")
+BB_updateStatusAndLog("Script initialized. Press F1 to start automation.")
 
-TrayTip("Ready! Press F1 to start.", "🐝 BeeBrained's PS99 Mining Event Macro", 0x10)
+TrayTip("Initialized! Press F1 to start.", "🐝 BeeBrained's PS99 Mining Event Macro", 0x10)
