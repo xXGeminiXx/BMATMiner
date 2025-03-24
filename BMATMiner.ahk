@@ -1,5 +1,5 @@
 ; 🐝 BeeBrained's PS99 Mining Event Automation 🐝
-; Last Updated: March 23, 2025
+; Last Updated: March 24, 2025
 ;
 ; == Testing Instructions ==
 ; 1. Ensure Roblox and Pet Simulator 99 are installed and running.
