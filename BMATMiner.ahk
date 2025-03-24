@@ -13,7 +13,7 @@
 ; - Template matching may fail if game resolution or UI scaling changes. Adjust templates or confidence levels in BB_smartTemplateMatch if needed.
 ; - Window activation may fail on some systems. Ensure Roblox is not minimized and run as admin.
 ; - Assumes default Roblox hotkeys ('f' to open inventory). Update config if different.
-; - Reconnect in BB_resetGameState may need manual intervention if Roblox URL launches aren’t set up.
+; - Reconnect in BB_resetGameState may need manual intervention if Roblox URL launches aren't set up.
 ; - Screenshot functionality is disabled (placeholder in BB_updateStatusAndLog).
 ; - Automine detection now uses a large search area on the left side of the screen and falls back to pixel movement detection if template matching fails.
 ; - Errors or GUIs are cleared by pressing 'F' (which also opens the inventory if
@@ -26,7 +26,7 @@ if !A_IsAdmin {
 }
 
 ; ===================== GLOBAL VARIABLES =====================
-global BB_VERSION := "1.6.9"
+global BB_VERSION := "1.7.3"
 global BB_running := false
 global BB_paused := false
 global BB_lastGameStateReset := 0
@@ -209,8 +209,17 @@ BB_detectMovement(hwnd) {
         BB_updateStatusAndLog("No significant movement detected (" . changes . " changes out of " . regions.Length . " regions)")
         return false
     }
-}
 
+}
+; Performs periodic anti-AFK actions to prevent disconnection.
+; This function is called on a timer to keep the game session active.
+; Notes:
+;   - Only runs when script is active and not paused
+;   - Verifies active Roblox window before performing actions
+;   - Simulates player actions like jumping and movement
+;   - Uses random movement directions to appear more natural
+;   - Includes delays to allow game to process actions
+;   - Logs all anti-AFK actions for monitoring
 BB_antiAfkLoop() {
     global BB_running, BB_paused, BB_ANTI_AFK_INTERVAL
     if (!BB_running || BB_paused) {
@@ -389,7 +398,13 @@ BB_downloadTemplate(templateName, fileName) {
         }
     }
 }
-
+; Downloads a file from a URL using PowerShell.
+; Parameters:
+;   url: The URL of the file to download.
+;   dest: The local path to save the downloaded file.
+; Returns: True if download succeeds, False otherwise.
+; Notes:
+;   - Uses PowerShell to download files
 BB_httpDownload(url, dest) {
     BB_updateStatusAndLog("Attempting PowerShell download for: " . url)
     psCommand := "(New-Object System.Net.WebClient).DownloadFile('" . url . "','" . dest . "')"
@@ -461,7 +476,13 @@ BB_robustWindowActivation(hwnd) {
     BB_updateStatusAndLog("Failed to activate window after 3 attempts: " . hwnd, true, true)
     return false
 }
-
+; Clicks at a specified position in the Roblox window.
+; Parameters:
+;   x: The x-coordinate to click.
+;   y: The y-coordinate to click.
+; Returns: True if click succeeds, False otherwise.
+; Notes:
+;   - Verifies active Roblox window before clicking
 BB_clickAt(x, y) {
     global BB_CLICK_DELAY_MIN, BB_CLICK_DELAY_MAX, BB_performanceData
     hwnd := WinGetID("A")
@@ -496,7 +517,13 @@ BB_clickAt(x, y) {
     BB_updateStatusAndLog("Completed click at x=" . x . ", y=" . y . " (total: " . elapsed . "ms)")
     return true
 }
-
+; Downloads a file from a URL and validates its size and format.
+; Parameters:
+;   url: The URL of the file to download.
+;   dest: The local path to save the downloaded file.
+; Returns: True if download succeeds, False otherwise.
+; Notes:
+;   - Uses HTTP download function
 downloadWithStatus(url, dest) {
     try {
         if (!BB_httpDownload(url, dest)) {
@@ -517,7 +544,13 @@ downloadWithStatus(url, dest) {
         throw err
     }
 }
-
+; Joins an array of strings into a single string with a specified delimiter.
+; Parameters:
+;   arr: The array of strings to join.
+;   delimiter: The delimiter to use between strings.
+; Returns: A single string containing all elements of the array, separated by the delimiter.
+; Notes:
+;   - Uses a loop to concatenate the strings
 StrJoin(arr, delimiter) {
     result := ""
     for i, value in arr
@@ -526,7 +559,6 @@ StrJoin(arr, delimiter) {
 }
 
 ; ===================== LOAD CONFIGURATION =====================
-
 BB_loadConfig() {
     global BB_CONFIG_FILE, BB_logFile, BB_ENABLE_LOGGING, BB_WINDOW_TITLE, BB_EXCLUDED_TITLES
     global BB_CLICK_DELAY_MIN, BB_CLICK_DELAY_MAX, BB_INTERACTION_DURATION, BB_CYCLE_INTERVAL
@@ -610,13 +642,12 @@ BB_loadConfig() {
 }
 
 ; ===================== GUI SETUP =====================
-
 BB_setupGUI() {
     global BB_myGUI, BB_BOMB_HOTKEY, BB_TNT_CRATE_HOTKEY, BB_TNT_BUNDLE_HOTKEY, BB_VERSION
-    BB_myGUI := Gui("", "🐝 BeeBrained’s PS99 Mining Event Macro v" . BB_VERSION . " 🐝")
+    BB_myGUI := Gui("", "🐝 BeeBrained's PS99 Mining Event Macro v" . BB_VERSION . " 🐝")
     BB_myGUI.OnEvent("Close", BB_exitApp)
     
-    BB_myGUI.Add("Text", "x10 y10 w400 h20 Center", "🐝 BeeBrained’s PS99 Mining Event Macro v" . BB_VERSION . " 🐝")
+    BB_myGUI.Add("Text", "x10 y10 w400 h20 Center", "🐝 BeeBrained's PS99 Mining Event Macro v" . BB_VERSION . " 🐝")
     hotkeyText := "Hotkeys: F1 (Start) | F2 (Stop) | P (Pause) | F3 (Explosives) | Esc (Exit)"
     hotkeyText .= " | " . BB_BOMB_HOTKEY . " (Bomb) | " . BB_TNT_CRATE_HOTKEY . " (TNT Crate) | " . BB_TNT_BUNDLE_HOTKEY . " (TNT Bundle)"
     BB_myGUI.Add("Text", "x10 y30 w400 h25 Center", hotkeyText)
@@ -667,14 +698,12 @@ BB_setupGUI() {
 }
 
 ; ===================== HOTKEYS =====================
-
 Hotkey("F2", BB_stopAutomation)
 Hotkey("p", BB_togglePause)
 Hotkey("F3", BB_toggleExplosives)
 Hotkey("Esc", BB_exitApp)
 
 ; ===================== CORE FUNCTIONS =====================
-
 BB_startAutomation(*) {
     global BB_running, BB_paused, BB_currentArea, BB_automationState, BB_ENABLE_EXPLOSIVES
     if BB_running {
@@ -703,7 +732,12 @@ BB_startAutomation(*) {
     BB_updateStatusAndLog("Resetting emerald block count", false)
     BB_myGUI["EmeraldBlockCount"].Text := "0"
 }
-
+; Stops the mining automation.
+; Parameters:
+;   None
+; Returns: None
+; Notes:
+;   - Stops all timers and resets the automation state
 BB_stopAutomation(*) {
     global BB_running, BB_paused, BB_currentArea, BB_merchantState, BB_automationState
     BB_running := false
@@ -718,7 +752,13 @@ BB_stopAutomation(*) {
     SetTimer(BB_tntBundleLoop, 0)
     BB_updateStatusAndLog("Stopped automation")
 }
-
+; Toggles the pause state of the mining automation.
+; Parameters:
+;   None
+; Returns: None
+; Notes:
+;   - Switches the pause state of the automation
+;   - Updates the status log with the new pause state
 BB_togglePause(*) {
     global BB_running, BB_paused
     if BB_running {
@@ -743,15 +783,6 @@ BB_ensureGameState(hwnd) {
     
     WinGetPos(&winX, &winY, &winW, &winH, "ahk_id " . hwnd)
     
-    ; Open and close the inventory to reset UI overlays (using 'f' as per user specification)
-    loop 2 {
-        SendInput("{f down}")
-        Sleep(100)
-        SendInput("{f up}")
-        Sleep(500)
-        BB_updateStatusAndLog("Sent 'f' to open/close inventory for UI reset")
-    }
-    
     ; Click in the top-right corner of the window to close any popups
     closeX := winX + winW - 50
     closeY := winY + 50
@@ -766,17 +797,15 @@ BB_ensureGameState(hwnd) {
     BB_updateStatusAndLog("Clicked center of window to dismiss overlays at x=" . centerX . ", y=" . centerY)
     Sleep(500)
     
-    ; Jump to close any remaining menus that might close on jump
-    loop 2 {
-        SendInput("{Space down}")
-        Sleep(100)
-        SendInput("{Space up}")
-        Sleep(500)
-    }
-    
     BB_updateStatusAndLog("Game state ensured: UI reset")
 }
-
+; Toggles the use of explosives in the mining automation.
+; Parameters:
+;   None
+; Returns: None
+; Notes:
+;   - Switches the use of explosives on and off
+;   - Updates the status log with the new state
 BB_toggleExplosives(*) {
     global BB_ENABLE_EXPLOSIVES, BB_myGUI
     BB_ENABLE_EXPLOSIVES := !BB_ENABLE_EXPLOSIVES
@@ -792,7 +821,13 @@ BB_toggleExplosives(*) {
         BB_updateStatusAndLog("Explosives Disabled - Timers stopped")
     }
 }
-
+; Updates the list of active Roblox windows.
+; Parameters:
+;   None
+; Returns: An array of active Roblox window handles
+; Notes:
+;   - Checks for active Roblox windows
+;   - Filters out excluded titles
 BB_updateActiveWindows() {
     global BB_active_windows, BB_last_window_check, BB_WINDOW_TITLE, BB_EXCLUDED_TITLES
     currentTime := A_TickCount
@@ -838,7 +873,12 @@ BB_updateActiveWindows() {
     BB_updateStatusAndLog("Found " . BB_active_windows.Length . " valid Roblox windows")
     return BB_active_windows
 }
-
+; Checks if a window title contains any excluded titles.
+; Parameters:
+;   title: The title of the window to check.
+; Returns: True if the title contains an excluded title, False otherwise.
+; Notes:
+;   - Checks against a list of excluded titles
 BB_hasExcludedTitle(title) {
     global BB_EXCLUDED_TITLES
     for excluded in BB_EXCLUDED_TITLES {
@@ -862,6 +902,8 @@ BB_checkForError(hwnd) {
     FoundX := ""
     FoundY := ""
     
+    ; Temporarily disabled error template checks
+    /*
     errorTypes := ["error_message", "error_message_alt1", "connection_lost"]
     for type in errorTypes {
         if BB_smartTemplateMatch(type, &FoundX, &FoundY, hwnd) {
@@ -873,6 +915,7 @@ BB_checkForError(hwnd) {
             BB_updateStatusAndLog("Info: Template '" . type . "' not found during error check")
         }
     }
+    */
     
     if errorDetected {
         BB_updateStatusAndLog("Handling error: " . errorType)
@@ -909,6 +952,12 @@ BB_checkForError(hwnd) {
     return false
 }
 
+; Attempts to go to the top of the mining area.
+; Parameters:
+;   None
+; Returns: True if successful, False otherwise.
+; Notes:
+;   - Searches for the "Go to Top" button on the right side of the screen
 BB_goToTop() {
     FoundX := ""
     FoundY := ""
@@ -939,7 +988,13 @@ BB_goToTop() {
     BB_updateStatusAndLog("Failed to find 'Go to Top' button after 3 attempts")
     return false
 }
-
+; Resets the game state to the initial state.
+; Parameters:
+;   None
+; Returns: True if successful, False otherwise.
+; Notes:
+;   - Closes all active Roblox windows
+;   - Attempts to reopen Pet Simulator 99
 BB_resetGameState() {
     global BB_currentArea, BB_merchantState, BB_isAutofarming, BB_automationState, BB_FAILED_INTERACTION_COUNT
     BB_updateStatusAndLog("Attempting to reset game state")
@@ -982,7 +1037,13 @@ BB_resetGameState() {
         return false
     }
 }
-
+; Checks for updates from the GitHub repository.
+; Parameters:
+;   None
+; Returns: None
+; Notes:
+;   - Retrieves the latest version from the version.txt file
+;   - Compares the current version with the remote version
 BB_checkForUpdates() {
     global BB_VERSION
     versionUrl := "https://raw.githubusercontent.com/xXGeminiXx/BMATMiner/main/version.txt"
@@ -1019,7 +1080,6 @@ BB_checkForUpdates() {
     }
     BB_updateStatusAndLog("Failed to check for updates after " . maxRetries . " attempts", true, true)
 }
-
 ; Enables automining in the game.
 ; Parameters:
 ;   hwnd: The handle of the Roblox window to interact with.
@@ -1356,7 +1416,6 @@ BB_disableAutomine(hwnd) {
 }
 
 ; ===================== EXPLOSIVES FUNCTIONS =====================
-
 BB_sendHotkeyWithDownUp(hotkey) {
     hwnd := WinGetID("A")
     if (!hwnd || WinGetProcessName(hwnd) != "RobloxPlayerBeta.exe") {
@@ -1458,7 +1517,13 @@ BB_bombLoop() {
         BB_updateStatusAndLog("Bomb loop skipped (not autofarming)")
     }
 }
-
+; Loops through TNT crate usage.
+; Parameters:
+;   None
+; Returns: None
+; Notes:
+;   - Checks if the script is running, not paused, and explosives are enabled
+;   - Verifies active Roblox window
 BB_tntCrateLoop() {
     global BB_running, BB_paused, BB_ENABLE_EXPLOSIVES, BB_isAutofarming
     if (!BB_running || BB_paused || !BB_ENABLE_EXPLOSIVES) {
@@ -1478,6 +1543,12 @@ BB_tntCrateLoop() {
         BB_updateStatusAndLog("TNT crate loop skipped (not autofarming)")
     }
 }
+; Loops through TNT bundle usage.
+; Parameters:
+;   None
+; Returns: None
+; Notes:
+;   - Checks if the script is running, not paused, and explosives are enabled
 
 BB_tntBundleLoop() {
     global BB_running, BB_paused, BB_ENABLE_EXPLOSIVES, BB_isAutofarming
@@ -1499,9 +1570,14 @@ BB_tntBundleLoop() {
     }
 }
 
-
 ; ===================== STATE MACHINE AUTOMATION LOOP =====================
-
+; Loops through the mining automation cycle.
+; Parameters:
+;   None
+; Returns: None
+; Notes:
+;   - Checks if the script is running, not paused
+;   - Ensures game state is correct
 BB_miningAutomationLoop() {
     global BB_running, BB_paused, BB_automationState, BB_FAILED_INTERACTION_COUNT, BB_MAX_FAILED_INTERACTIONS
     global BB_currentArea, BB_merchantState, BB_isAutofarming, BB_CYCLE_INTERVAL, BB_ENABLE_EXPLOSIVES, gameStateEnsured
@@ -1614,6 +1690,12 @@ BB_miningAutomationLoop() {
 }
 
 ; ===================== ANTI-AFK AND RECONNECT FUNCTIONS =====================
+; Reconnects to the game if the connection is lost.
+; Parameters:
+;   None
+; Returns: None
+; Notes:
+;   - Checks if the script is running and not paused
 
 BB_reconnectCheckLoop() {
     global BB_running, BB_paused
@@ -1626,12 +1708,24 @@ BB_reconnectCheckLoop() {
 }
 
 ; ===================== UTILITY FUNCTIONS =====================
+; Loads the configuration from a file.
+; Parameters:
+;   None
+; Returns: None
+; Notes:
+;   - Loads the configuration from a file
 
 BB_loadConfigFromFile(*) {
     BB_loadConfig()
     MsgBox("Configuration reloaded from " . BB_CONFIG_FILE)
 }
-
+; Exits the application.
+; Parameters:
+;   None
+; Returns: None
+; Notes:
+;   - Sets the running state to false
+;   - Stops all timers
 BB_exitApp(*) {
     global BB_running
     BB_running := false
@@ -1666,7 +1760,7 @@ BB_checkAutofarming(hwnd) {
     FoundX := ""
     FoundY := ""
     
-    ; Try template matching, but don’t rely on it
+    ; Try template matching, but don't rely on it
     if (BB_smartTemplateMatch("autofarm_off", &FoundX, &FoundY, hwnd)) {
         BB_updateStatusAndLog("Detected 'autofarm_off' button at x=" . FoundX . ", y=" . FoundY . ", automining is OFF")
         BB_isAutofarming := false
@@ -1684,10 +1778,16 @@ BB_checkAutofarming(hwnd) {
     BB_isAutofarming := true
     return true
 }
-
+; Performs a template match for a specified template name.
+; Parameters:
+;   templateName: The name of the template to match.
+;   FoundX: The x-coordinate of the found match.
+;   FoundY: The y-coordinate of the found match.
+;   hwnd: The handle of the Roblox window to check.
+;   searchArea: The area to search for the template.
 BB_smartTemplateMatch(templateName, &FoundX, &FoundY, hwnd, searchArea := "") {
-    global BB_TEMPLATES, BB_TEMPLATE_FOLDER, BB_isAutofarming
-
+    global BB_updateStatusAndLog
+    
     BB_updateStatusAndLog("Starting enhanced template match for '" . templateName . "' (hwnd: " . hwnd . ")")
 
     ; Validate window
@@ -1707,12 +1807,7 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, hwnd, searchArea := "") {
         BB_updateStatusAndLog("DPI scaling applied: " . dpiScale)
     }
 
-    ; Dynamic coordinates
-    expectedButtonX := winX + Round(winW * 0.026 * dpiScale)  ; ~50/1938
-    expectedButtonY := winY + Round(winH * 0.55 * dpiScale)   ; ~570/1038
-    BB_updateStatusAndLog("Expected button position: (" . expectedButtonX . "," . expectedButtonY . ")")
-
-    ; Define search regions (adjusted for error messages to be higher)
+    ; Initialize error template check
     errorTemplates := ["error_message", "error_message_alt1", "connection_lost"]
     isErrorTemplate := false
     for template in errorTemplates {
@@ -1721,136 +1816,56 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, hwnd, searchArea := "") {
             break
         }
     }
+
+    ; Adjust coordinates - Move much lower for both template search and fallback
+    expectedButtonX := winX + Round(87 * dpiScale)      ; X position is good
+    expectedButtonY := winY + Round(600 * dpiScale)     ; Moved much lower from 550 to 600
+    BB_updateStatusAndLog("Expected button position: (" . expectedButtonX . "," . expectedButtonY . ")")
+
+    ; Define search regions based on template type
     searchRegions := isErrorTemplate 
-        ? [  ; Tighter, higher regions for error messages
-            [Round(winW * 0.1), Round(winH * 0.1), Round(winW * 0.4), Round(winH * 0.3)],   ; ~194,104 to 775,311
-            [Round(winW * 0.05), Round(winH * 0.05), Round(winW * 0.45), Round(winH * 0.35)] ; ~97,52 to 872,363
+        ? [  ; Error message regions unchanged
+            [Round(winW * 0.1), Round(winH * 0.1), Round(winW * 0.4), Round(winH * 0.3)],
+            [Round(winW * 0.05), Round(winH * 0.05), Round(winW * 0.45), Round(winH * 0.35)]
           ]
-        : [  ; Broader regions for autofarm buttons
-            [Round(winW * 0.015), Round(winH * 0.50), Round(winW * 0.10), Round(winH * 0.62)],  ; ~30,519 to 194,644
-            [Round(winW * 0.01), Round(winH * 0.48), Round(winW * 0.12), Round(winH * 0.64)],   ; ~20,498 to 232,6640
-            [Round(winW * 0.005), Round(winH * 0.46), Round(winW * 0.15), Round(winH * 0.66)]   ; ~10,476 to 290,685
+        : [  ; Automine button regions centered around new lower position
+            [winX + 67, winY + 580, winX + 107, winY + 620],   ; Tight region
+            [winX + 57, winY + 570, winX + 117, winY + 630],   ; Medium region
+            [winX + 47, winY + 560, winX + 127, winY + 640]    ; Wider region
           ]
 
-    ; Step 1: Template matching with adjusted tolerance
+    ; Template matching with very strict tolerance
     templateFile := BB_TEMPLATES.Has(templateName) ? BB_TEMPLATE_FOLDER . "\" . BB_TEMPLATES[templateName] : ""
     if (templateFile && FileExist(templateFile)) {
-        tolerance := isErrorTemplate ? "*100" : "*250"  ; Stricter for errors, lenient for autofarm
+        tolerance := isErrorTemplate ? "*100" : "*50"  ; Very strict for autofarming buttons
         for region in searchRegions {
-            searchX1 := winX + region[1]
-            searchY1 := winY + region[2]
-            searchX2 := winX + region[3]
-            searchY2 := winY + region[4]
+            searchX1 := isErrorTemplate ? winX + region[1] : region[1]  ; Error regions use relative coords
+            searchY1 := isErrorTemplate ? winY + region[2] : region[2]  ; Button regions use absolute coords
+            searchX2 := isErrorTemplate ? winX + region[3] : region[3]
+            searchY2 := isErrorTemplate ? winY + region[4] : region[4]
+            
             BB_updateStatusAndLog("Searching template: " . templateFile)
             BB_updateStatusAndLog("Search region: " . searchX1 . "," . searchY1 . " to " . searchX2 . "," . searchY2)
-
-            pixelColor := PixelGetColor(expectedButtonX, expectedButtonY, "RGB")
-            BB_updateStatusAndLog("Pixel color at (" . expectedButtonX . "," . expectedButtonY . "): " . pixelColor)
 
             try {
                 if (ImageSearch(&FoundX, &FoundY, searchX1, searchY1, searchX2, searchY2, tolerance . " *w0.8 *h0.8 *TransBlack *TransWhite " . templateFile)
                     || ImageSearch(&FoundX, &FoundY, searchX1, searchY1, searchX2, searchY2, tolerance . " *w1.2 *h1.2 *TransBlack *TransWhite " . templateFile)) {
-                    BB_updateStatusAndLog("Template matched at x=" . FoundX . ", y=" . FoundY . " in region " . A_Index)
-                    
-                    ; Validate error templates to avoid false positives
-                    if (isErrorTemplate) {
-                        if (BB_validateErrorMatch(FoundX, FoundY)) {
-                            BB_updateStatusAndLog("Error match validated at x=" . FoundX . ", y=" . FoundY)
-                            return true
-                        } else {
-                            BB_updateStatusAndLog("Error match rejected after validation at x=" . FoundX . ", y=" . FoundY)
-                            continue
-                        }
-                    }
+                    BB_updateStatusAndLog("TEMPLATE DETECTION: Found match at x=" . FoundX . ", y=" . FoundY . " in region " . A_Index)
                     return true
-                } else {
-                    BB_updateStatusAndLog("Template not found in region " . A_Index)
                 }
             } catch as err {
                 BB_updateStatusAndLog("ImageSearch error: " . err.Message, true, true)
             }
         }
-    } else {
-        BB_updateStatusAndLog("Skipping template matching (no valid template file)", true)
+        BB_updateStatusAndLog("Template matching failed, proceeding to fallback")
     }
 
-    ; Step 2: Autofarm-specific detection (unchanged from previous aggressive version)
+    ; Fallback to new lower coordinates
     if (templateName = "autofarm_off" || templateName = "autofarm_on") {
-        BB_updateStatusAndLog("Template failed or skipped, proceeding to enhanced autofarm detection")
-
-        pixelColor := PixelGetColor(expectedButtonX, expectedButtonY, "RGB")
-        BB_updateStatusAndLog("Sampled pixel color at (" . expectedButtonX . "," . expectedButtonY . "): " . pixelColor)
-        tolerance := 150
-
-        static expectedRed := 0xFF0000
-        static expectedGreen := 0x00FF00
-
-        if (BB_isColorSimilar(pixelColor, expectedRed, tolerance) && BB_verifyColorCluster(expectedButtonX, expectedButtonY, expectedRed, tolerance)) {
-            BB_updateStatusAndLog("Color matches red (autofarm_off), automining is OFF")
-            FoundX := expectedButtonX
-            FoundY := expectedButtonY
-            BB_isAutofarming := false
-            return (templateName = "autofarm_off")
-        } else if (BB_isColorSimilar(pixelColor, expectedGreen, tolerance) && BB_verifyColorCluster(expectedButtonX, expectedButtonY, expectedGreen, tolerance)) {
-            BB_updateStatusAndLog("Color matches green (autofarm_on), automining is ON")
-            FoundX := expectedButtonX
-            FoundY := expectedButtonY
-            BB_isAutofarming := true
-            return (templateName = "autofarm_on")
-        }
-
-        BB_updateStatusAndLog("Color detection inconclusive, attempting edge detection")
-        if (BB_detectEdges(expectedButtonX, expectedButtonY, &FoundX, &FoundY)) {
-            BB_updateStatusAndLog("Edge detected at x=" . FoundX . ", y=" . FoundY . ", proceeding to validate")
-            BB_clickAt(FoundX, FoundY)
-            Sleep(1000)
-            if (BB_detectMovement(hwnd)) {
-                BB_updateStatusAndLog("Movement detected after edge-based click, automining is ON")
-                BB_isAutofarming := true
-                return true
-            } else {
-                BB_updateStatusAndLog("No movement after edge-based click, automining is OFF")
-                BB_isAutofarming := false
-                return false
-            }
-        }
-
-        BB_updateStatusAndLog("Edge detection failed, attempting pixel grid pattern match")
-        if (BB_matchPixelGrid(expectedButtonX, expectedButtonY, &FoundX, &FoundY)) {
-            BB_updateStatusAndLog("Grid pattern matched at x=" . FoundX . ", y=" . FoundY . ", proceeding to validate")
-            BB_clickAt(FoundX, FoundY)
-            Sleep(1000)
-            if (BB_detectMovement(hwnd)) {
-                BB_updateStatusAndLog("Movement detected after grid-based click, automining is ON")
-                BB_isAutofarming := true
-                return true
-            } else {
-                BB_updateStatusAndLog("No movement after grid-based click, automining is OFF")
-                BB_isAutofarming := false
-                return false
-            }
-        }
-
-        BB_updateStatusAndLog("All detection failed, performing extreme fallback")
-        BB_ensureGameState(hwnd)
-        Sleep(500)
-        loop 3 {
-            BB_clickAt(expectedButtonX, expectedButtonY)
-            BB_updateStatusAndLog("Extreme fallback click " . A_Index . " at (" . expectedButtonX . "," . expectedButtonY . ")")
-            Sleep(1000)
-            if (BB_detectMovement(hwnd)) {
-                BB_updateStatusAndLog("Movement detected, automining is ON")
-                FoundX := expectedButtonX
-                FoundY := expectedButtonY
-                BB_isAutofarming := true
-                return true
-            }
-        }
-        BB_updateStatusAndLog("No movement after extreme fallback, assuming automining is OFF")
         FoundX := expectedButtonX
         FoundY := expectedButtonY
-        BB_isAutofarming := false
-        return false
+        BB_updateStatusAndLog("FALLBACK: Using position at x=" . FoundX . ", y=" . FoundY)
+        return true
     }
 
     BB_updateStatusAndLog("Template '" . templateName . "' not found after all attempts")
@@ -1858,17 +1873,24 @@ BB_smartTemplateMatch(templateName, &FoundX, &FoundY, hwnd, searchArea := "") {
 }
 
 ; Validation function for error templates
+; Parameters:
+;   x: The x-coordinate of the match.
+;   y: The y-coordinate of the match.
+; Returns: True if the match is valid, False otherwise.
+; Notes:
+;   - Refines error colors to focus on red (common for errors)
 BB_validateErrorMatch(x, y) {
     BB_updateStatusAndLog("Validating error match at (" . x . "," . y . ")")
     radius := 5
-    requiredMatches := 5  ; Increase to 5 for stricter validation
+    requiredMatches := 5
     matches := 0
+    redMatches := 0
 
     ; Refine error colors to focus on red (common for errors) and exclude generic whites/grays unless paired with red
     errorColors := [0xFF0000]  ; Start with red as the primary error indicator
     tolerance := 80  ; Tighten tolerance slightly for more precision
 
-    ; Check a 10x10 area
+    ; Check a 10x10 area for red pixels
     xCheck := x - radius
     while (xCheck <= x + radius) {
         yCheck := y - radius
@@ -1877,8 +1899,7 @@ BB_validateErrorMatch(x, y) {
                 color := PixelGetColor(xCheck, yCheck, "RGB")
                 for errorColor in errorColors {
                     if (BB_isColorSimilar(color, errorColor, tolerance)) {
-                        matches++
-                        BB_updateStatusAndLog("Validation match at (" . xCheck . "," . yCheck . "): " . color)
+                        redMatches++
                         break
                     }
                 }
@@ -1891,7 +1912,7 @@ BB_validateErrorMatch(x, y) {
     }
 
     ; Secondary check: If red is found, look for white/gray nearby to confirm error UI
-    if (matches >= 2) {  ; Require at least 2 red pixels before secondary check
+    if (redMatches >= 2) {  ; Require at least 2 red pixels before secondary check
         whiteGrayColors := [0xFFFFFF, 0xC0C0C0]
         whiteGrayMatches := 0
         xCheck := x - radius
@@ -1903,7 +1924,6 @@ BB_validateErrorMatch(x, y) {
                     for wgColor in whiteGrayColors {
                         if (BB_isColorSimilar(color, wgColor, tolerance)) {
                             whiteGrayMatches++
-                            BB_updateStatusAndLog("Secondary validation match at (" . xCheck . "," . yCheck . "): " . color)
                             break
                         }
                     }
@@ -1914,20 +1934,24 @@ BB_validateErrorMatch(x, y) {
             }
             xCheck++
         }
+        
+        ; Log summary instead of individual matches
+        BB_updateStatusAndLog("Found " . redMatches . " red pixels and " . whiteGrayMatches . " white/gray pixels")
+        
         ; Require both red and some white/gray to confirm an error
         if (whiteGrayMatches >= 3) {
-            BB_updateStatusAndLog("Error UI confirmed with " . matches . " red and " . whiteGrayMatches . " white/gray matches")
+            BB_updateStatusAndLog("Error UI confirmed")
             return true
         } else {
-            BB_updateStatusAndLog("Red found but insufficient white/gray context (" . whiteGrayMatches . " matches)")
+            BB_updateStatusAndLog("Red found but insufficient white/gray context")
         }
     }
 
-    BB_updateStatusAndLog("Validation failed: " . matches . " matches found, required " . requiredMatches)
+    BB_updateStatusAndLog("Validation failed: insufficient matches")
     return false
 }
 
-; Edge Detection 
+; Edge Detection
 BB_detectEdges(centerX, centerY, &FoundX, &FoundY) {
     BB_updateStatusAndLog("Performing edge detection around (" . centerX . "," . centerY . ")")
     radius := 10
@@ -1974,7 +1998,12 @@ BB_detectEdges(centerX, centerY, &FoundX, &FoundY) {
     return false
 }
 
-; Pixel Grid Pattern Matching 
+; Pixel Grid Pattern Matching
+; Parameters:
+;   centerX: The x-coordinate of the center of the grid.
+;   centerY: The y-coordinate of the center of the grid.
+;   FoundX: The x-coordinate of the found match.
+;   FoundY: The y-coordinate of the found match.
 BB_matchPixelGrid(centerX, centerY, &FoundX, &FoundY) {
     BB_updateStatusAndLog("Performing pixel grid pattern match around (" . centerX . "," . centerY . ")")
     gridSize := 5
@@ -2011,7 +2040,13 @@ BB_matchPixelGrid(centerX, centerY, &FoundX, &FoundY) {
     return false
 }
 
-; Color Difference 
+; Color Difference
+; Parameters:
+;   color1: The first color to compare.
+;   color2: The second color to compare.
+; Returns: The difference between the two colors.
+; Notes:
+;   - Calculates the difference between two colors
 BB_colorDifference(color1, color2) {
     r1 := (color1 >> 16) & 0xFF
     g1 := (color1 >> 8) & 0xFF
@@ -2023,6 +2058,13 @@ BB_colorDifference(color1, color2) {
 }
 
 ; Helper function: Verify if a pixel is part of a color cluster (to avoid false positives)
+; Parameters:
+;   x: The x-coordinate of the pixel.
+;   y: The y-coordinate of the pixel.
+;   targetColor: The color to verify.
+;   tolerance: The tolerance for color similarity.
+;   radius: The radius of the grid to search.
+;   requiredMatches: The number of matches required to verify the color cluster.
 BB_verifyColorCluster(x, y, targetColor, tolerance, radius := 3, requiredMatches := 5) {
     matches := 0
     
@@ -2053,6 +2095,13 @@ BB_verifyColorCluster(x, y, targetColor, tolerance, radius := 3, requiredMatches
 }
 
 ; Helper function: Check if colors are similar within tolerance
+; Parameters:
+;   color1: The first color to compare.
+;   color2: The second color to compare.
+;   tolerance: The tolerance for color similarity.
+; Returns: True if the colors are similar, False otherwise.
+; Notes:
+;   - Extracts RGB components and checks if each component is within tolerance
 BB_isColorSimilar(color1, color2, tolerance := 20) {
     ; Extract RGB components
     r1 := (color1 >> 16) & 0xFF
@@ -2068,6 +2117,10 @@ BB_isColorSimilar(color1, color2, tolerance := 20) {
 }
 
 ; Helper function: Detect UI elements by analyzing screen structure
+; Parameters:
+;   searchArea: The area to search for UI elements.
+;   FoundX: The x-coordinate of the found match.
+;   FoundY: The y-coordinate of the found match.
 BB_detectUIElements(searchArea, &FoundX, &FoundY) {
     ; Set initial values
     FoundX := 0
