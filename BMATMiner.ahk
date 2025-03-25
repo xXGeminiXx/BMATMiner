@@ -1441,7 +1441,7 @@ StrToInt(str) {
     return Integer(str)
 }
 
-; Opens the teleport menu in the game.
+; Opens the teleport menu in the game 
 ; Parameters:
 ;   hwnd: The handle of the Roblox window to interact with.
 ; Returns: True if successful, False otherwise
@@ -1459,77 +1459,95 @@ BB_openTeleportMenu(hwnd) {
     
     BB_updateStatusAndLog("Window dimensions: " . winW . "x" . winH)
     
-    ; Create the 4x2 grid as described by the user
-    ; First row: Gift, Teleport
-    ; Second row: Hoverboard, Autohatch
-    ; Third row: Shop, Supercomputer
-    ; Fourth row: Automine, (nothing)
+    ; First try template matching for teleport button
+    FoundX := -1
+    FoundY := -1
+    templateUsed := false
     
-    ; Calculate grid dimensions (very top of screen)
-    gridStartX := winX + 40   ; Left edge of grid
-    gridStartY := winY + 40   ; Very top of screen, much higher than before
-    
-    ; Width and height for the grid cells
-    cellWidth := 70
-    cellHeight := 70
-    
-    ; Calculate exact positions for each button in the 4x2 grid
-    buttonPositions := [
-        ; Row 1 (top)
-        [gridStartX,               gridStartY],                 ; Gift (top-left)
-        [gridStartX + cellWidth,   gridStartY],                 ; Teleport (top-right)
-        
-        ; Row 2
-        [gridStartX,               gridStartY + cellHeight],    ; Hoverboard (2nd row, left)
-        [gridStartX + cellWidth,   gridStartY + cellHeight],    ; Autohatch (2nd row, right)
-        
-        ; Row 3
-        [gridStartX,               gridStartY + cellHeight*2],  ; Shop (3rd row, left)
-        [gridStartX + cellWidth,   gridStartY + cellHeight*2],  ; Supercomputer (3rd row, right)
-        
-        ; Row 4
-        [gridStartX,               gridStartY + cellHeight*3],  ; Automine (bottom-left)
-        [gridStartX + cellWidth,   gridStartY + cellHeight*3]   ; Empty slot (bottom-right)
+    ; CRITICAL FIX: Search EXTREMELY high in the window
+    ; Log shows click at (137,306) hit autohatch, so search area needs to be much higher
+    searchArea := [
+        winX + 1,         ; Left edge (FIXED: ensure positive integer)
+        winY + 1,         ; EXTREMELY HIGH top boundary (FIXED: ensure positive integer)
+        winX + (winW/3),  ; 1/3 of window width
+        winY + 100        ; Keep search very limited to top area only (FIXED: lower to avoid invalid area)
     ]
     
-    ; Target teleport specifically (2nd position, top row)
-    teleportButton := buttonPositions[2]
-    
-    ; Add offset to click center of button
-    clickX := teleportButton[1] + cellWidth/2
-    clickY := teleportButton[2] + cellHeight/2
+    ; Try template matching first - stricter tolerance
+    BB_updateStatusAndLog("Attempting template match in area: " . Round(searchArea[1]) . "," . Round(searchArea[2]) . "," . Round(searchArea[3]) . "," . Round(searchArea[4]))
+    if (BB_smartTemplateMatch("teleport_button", &FoundX, &FoundY, hwnd, searchArea, 40)) {
+        BB_updateStatusAndLog("Found teleport button with template match at x=" . FoundX . ", y=" . FoundY)
+        
+        ; Use template location but with a fixed Y offset to click higher
+        clickX := FoundX + 30  ; Center X of button
+        clickY := FoundY + 30  ; Center Y of button
+        
+        ; Log whether this is using template or fallback
+        BB_updateStatusAndLog("TEMPLATE MATCH: Using teleport template at x=" . clickX . ", y=" . clickY)
+        templateUsed := true
+    } else {
+        BB_updateStatusAndLog("No template match found, using EXTREMELY HIGH grid-based approach", true)
+        
+        ; If template fails, use grid-based approach with 4x2 grid at MUCH higher position
+        ; First row: Gift, Teleport
+        ; Second row: Hoverboard, Autohatch
+        
+        ; Calculate grid dimensions - EXTREMELY TOP OF WINDOW position
+        gridStartX := winX + 40   ; Left edge of grid
+        gridStartY := winY + 5    ; ABSOLUTE TOP OF WINDOW (FIXED: was 30, now 5)
+        
+        ; Width and height for the grid cells
+        cellWidth := 70
+        cellHeight := 25          ; MUCH SMALLER HEIGHT (FIXED: was 70, now 25)
+        
+        ; Target teleport specifically (2nd position, top row)
+        teleportX := gridStartX + cellWidth
+        teleportY := gridStartY
+        
+        ; Calculate center of button
+        clickX := teleportX + (cellWidth/2)
+        clickY := teleportY + (cellHeight/2)
+        
+        BB_updateStatusAndLog("GRID FALLBACK: Using EXTREMELY HIGH position at x=" . clickX . ", y=" . clickY . " (y was 306 before)")
+    }
     
     ; Ensure coordinates are within window bounds
     clickX := Max(winX + 10, Min(clickX, winX + winW - 10))
     clickY := Max(winY + 10, Min(clickY, winY + winH - 10))
     
-    BB_updateStatusAndLog("PRIMARY CLICK: Teleport button (position 2 in 4x2 grid) at x=" . clickX . ", y=" . clickY)
+    ; Click with clear logging
+    if (templateUsed)
+        BB_updateStatusAndLog("Clicking TEMPLATE teleport position at x=" . clickX . ", y=" . clickY)
+    else
+        BB_updateStatusAndLog("Clicking FALLBACK teleport position at x=" . clickX . ", y=" . clickY)
+    
     BB_clickAt(clickX, clickY)
     
-    ; Wait a moment to check if automining was toggled by accident
-    Sleep(1000)
+    ; Wait for teleport menu to appear
+    Sleep(3000)
     
     ; Check if the click triggered automining toggle (important movement check)
     if (BB_checkAutofarming(hwnd) != BB_isAutofarming) {
         ; If automining state changed, it means we didn't hit teleport
-        BB_updateStatusAndLog("Warning: Automining state changed - teleport click may have hit wrong button", true)
+        BB_updateStatusAndLog("Warning: Automining state changed - teleport click missed", true)
         
-        ; Try clicking higher up if our click hit automine
-        fallbackClickY := gridStartY + (cellHeight/2) - 10  ; Higher position, top row 
+        ; Try clicking EVEN HIGHER - absolute top of window
+        fallbackX := clickX
+        fallbackY := winY + 40  ; Extremely top area - almost touching window border
         
-        BB_updateStatusAndLog("FALLBACK CLICK: Trying higher teleport position at x=" . clickX . ", y=" . fallbackClickY)
-        BB_clickAt(clickX, fallbackClickY)
+        BB_updateStatusAndLog("EMERGENCY FALLBACK: Trying position at absolute top of window: x=" . fallbackX . ", y=" . fallbackY)
+        BB_clickAt(fallbackX, fallbackY)
+        
+        ; Wait for teleport menu to appear
+        Sleep(3000)
     }
-    
-    ; Wait for teleport menu to appear
-    Sleep(3000)
     
     BB_updateStatusAndLog("Teleport menu should now be open")
     return true
 }
 
 ; Teleports to the specified area after the teleport menu is open
-; Uses a much more reliable approach with proper grid layout and strict bounds checking
+; Uses a more reliable approach with adjusted positions for Area 4 button
 ; Parameters:
 ;   areaTemplate: The template name for the area button (e.g., "area_4_button")
 ;   hwnd: The handle of the Roblox window to interact with.
@@ -1551,23 +1569,22 @@ BB_teleportToArea(areaTemplate, hwnd) {
     
     BB_updateStatusAndLog("Looking for " . areaTemplate . " in teleport menu")
     
-    ; Wait for teleport menu to fully load
-    Sleep(2000)
+    ; Wait longer for teleport menu to fully load (increased from 2000ms)
+    Sleep(3000)
     
-    ; Create a grid of positions for the teleport menu
-    ; Based on log, area buttons appear on the left side of the screen
-    
-    ; Try template matching with SUPER strict tolerance (30) to avoid false positives
+    ; Try template matching with higher tolerance for area buttons
     FoundX := -1
     FoundY := -1
     
-    ; Very precise search area
+    ; Modified search area to look in top half of screen
     searchArea := [
-        winX + 10,                   ; Left edge
-        winY + 100,                  ; Upper area
-        winX + 250,                  ; Quarter width
-        winY + 400                   ; Upper middle
+        winX + 5,                    ; Left edge with small margin
+        winY + 50,                   ; Start higher in the screen
+        winX + (winW/2),             ; Half the screen width 
+        winY + (winH/2)              ; Half the screen height
     ]
+    
+    BB_updateStatusAndLog("Searching for " . areaTemplate . " in area: " . Round(searchArea[1]) . "," . Round(searchArea[2]) . "," . Round(searchArea[3]) . "," . Round(searchArea[4]))
     
     ; Verify template exists first
     templatePath := BB_TEMPLATE_FOLDER . "\" . BB_TEMPLATES[areaTemplate]
@@ -1578,81 +1595,74 @@ BB_teleportToArea(areaTemplate, hwnd) {
         BB_updateStatusAndLog("Using area template: " . templatePath)
     }
     
-    ; Try template matching with super strict tolerance (30) to avoid false positives
-    if (BB_smartTemplateMatch(areaTemplate, &FoundX, &FoundY, hwnd, searchArea, 30)) {
-        BB_updateStatusAndLog("Found " . areaTemplate . " at x=" . FoundX . ", y=" . FoundY . " with strict tolerance")
+    ; Try template matching with higher tolerance (60) for area buttons
+    if (BB_smartTemplateMatch(areaTemplate, &FoundX, &FoundY, hwnd, searchArea, 60)) {
+        BB_updateStatusAndLog("Found " . areaTemplate . " at x=" . FoundX . ", y=" . FoundY)
         
-        ; VERIFY the position makes sense (left side of screen)
-        if (FoundX < winX + 300) {  ; Only accept matches on left side
-            ; Use exact offset that worked in log (+50,+25) for area button
-            clickX := FoundX + 50  ; From successful log offset
-            clickY := FoundY + 25  ; From successful log offset
-            
-            ; Ensure click is within window bounds
-            clickX := Max(winX + 5, Min(clickX, winX + winW - 5))
-            clickY := Max(winY + 5, Min(clickY, winY + winH - 5))
-            
-            BB_updateStatusAndLog("Clicking " . areaTemplate . " at x=" . clickX . ", y=" . clickY)
-            BB_clickAt(clickX, clickY)
-            
-            ; Verify click is working with a secondary check after a brief wait
-            Sleep(1000)
-            
-            ; Update current area based on template
-            BB_currentArea := (areaTemplate = "area_4_button") ? "Area 4" : "Area 5"
-            BB_updateStatusAndLog("Teleporting to " . BB_currentArea)
-            
-            ; Wait for teleport to complete
-            Sleep(5000)
-            return true
-        } else {
-            BB_updateStatusAndLog("Rejecting suspicious match position outside expected area", true)
-        }
+        ; Click slightly offset from found position
+        clickX := FoundX + 35  ; Offset X
+        clickY := FoundY + 25  ; Offset Y
+        
+        ; Ensure click is within window bounds
+        clickX := Max(winX + 5, Min(clickX, winX + winW - 5))
+        clickY := Max(winY + 5, Min(clickY, winY + winH - 5))
+        
+        BB_updateStatusAndLog("Clicking " . areaTemplate . " at x=" . clickX . ", y=" . clickY . " (template match)")
+        BB_clickAt(clickX, clickY)
+        
+        ; Wait for teleport to complete
+        Sleep(5000)
+        
+        ; Update current area based on template
+        BB_currentArea := (areaTemplate = "area_4_button") ? "Area 4" : "Area 5"
+        BB_updateStatusAndLog("Teleporting to " . BB_currentArea)
+        return true
+    } else {
+        BB_updateStatusAndLog("No template match found for " . areaTemplate . ", using fixed positions", true)
     }
     
-    ; If template matching failed or rejected, use grid approach
-    BB_updateStatusAndLog("Using grid approach for teleport menu")
+    ; If template fails, use fixed positions based on the teleport menu layout
+    BB_updateStatusAndLog("Using fixed positions for " . areaTemplate)
     
-    ; Calculated grid for teleport menu (left side, 3x4 grid)
-    menuStartX := winX + 50
-    menuStartY := winY + 150
+    ; Area-specific positions - Area 4 is typically upper left, Area 5 is typically upper right
+    positions := []
     
-    menuCellWidth := 100
-    menuCellHeight := 70
-    
-    ; Create a grid of positions
-    menuGrid := []
-    
-    ; Create a 3x4 grid to click across the left side of menu
-    for row in [0, 1, 2, 3] {
-        for col in [0, 1, 2] {
-            posX := menuStartX + (col * menuCellWidth)
-            posY := menuStartY + (row * menuCellHeight)
-            menuGrid.Push([posX, posY])
-        }
+    if (areaTemplate = "area_4_button") {
+        ; Area 4 commonly appears in these positions after teleport menu opens
+        positions := [
+            [winX + 120, winY + 180],    ; Upper left area
+            [winX + 80, winY + 180],     ; Further left
+            [winX + 120, winY + 220],    ; Slightly lower
+            [winX + 80, winY + 220],     ; Lower left
+            [winX + 160, winY + 180],    ; Upper middle
+            [winX + 160, winY + 220]     ; Middle
+        ]
+    } else {
+        ; Area 5 commonly appears in these positions
+        positions := [
+            [winX + 320, winY + 180],    ; Upper right
+            [winX + 280, winY + 180],    ; Upper middle-right
+            [winX + 320, winY + 220],    ; Slightly lower right
+            [winX + 280, winY + 220],    ; Middle right
+            [winX + 240, winY + 180],    ; Upper middle
+            [winX + 240, winY + 220]     ; Middle
+        ]
     }
     
-    ; For Area 4, focus on upper part of grid
-    ; For Area 5, focus on lower part of grid
-    startIndex := (areaTemplate = "area_4_button") ? 1 : 7
-    endIndex := (areaTemplate = "area_4_button") ? 6 : 12
-    
-    ; Try each position in the appropriate section of the grid
-    ; Using proper AutoHotkey Loop syntax
-    i := startIndex
-    Loop (endIndex - startIndex + 1) {
-        pos := menuGrid[i]
+    ; Try each fixed position
+    for pos in positions {
         clickX := pos[1]
         clickY := pos[2]
         
         ; Ensure coordinates are within window bounds
-        clickX := Max(winX + 10, Min(clickX, winX + winW - 10))
-        clickY := Max(winY + 10, Min(clickY, winY + winH - 10))
+        clickX := Max(winX + 5, Min(clickX, winX + winW - 5))
+        clickY := Max(winY + 5, Min(clickY, winY + winH - 5))
         
-        BB_updateStatusAndLog("Trying grid position " . i . " for " . areaTemplate . " at x=" . clickX . ", y=" . clickY)
+        BB_updateStatusAndLog("Clicking " . areaTemplate . " at fixed position: x=" . clickX . ", y=" . clickY)
         BB_clickAt(clickX, clickY)
-        Sleep(800)  ; Brief pause between clicks
-        i++
+        
+        ; Wait between clicks
+        Sleep(1200)  ; Increased wait time
     }
     
     ; Update current area based on template
@@ -1731,184 +1741,89 @@ BB_disableAutomine(hwnd) {
     
     BB_updateStatusAndLog("Window dimensions: " . winW . "x" . winH)
     
-    ; Define search areas centered around upper-left to mid-left of screen
-    ; Set multiple search areas with increasing size
-    searchAreas := [
-        ; Initial focused search - around upper-left to mid-left (balanced height)
-        [
-            winX + 10,                    ; Left edge with small margin
-            winY + (winH/3.5),            ; Between upper third and quarter (moderate)
-            winX + 200,                   ; Limited width
-            winY + (winH/2) - 60          ; Middle of screen with medium offset
-        ],
-        ; Medium expanded search
-        [
-            winX + 10,                    ; Left edge with small margin
-            winY + (winH/4.5),            ; Moderate height
-            winX + 300,                   ; Wider search area
-            winY + (winH/2) - 30          ; Middle of screen with small offset
-        ],
-        ; Full left side search if needed
-        [
-            winX + 10,                    ; Left edge with small margin
-            winY + 70,                    ; Near top with margin
-            winX + 350,                   ; Wide search area
-            winY + (winH/2) + 70          ; Middle of screen plus offset
-        ]
-    ]
-    
-    ; Try each template in order - verify these exist in templates folder first
-    templates := ["automine_button", "autofarm_off", "autofarm_on"]
-    foundTemplate := ""
-    
-    ; Verify templates exist before using them
-    for template in templates {
-        templatePath := BB_TEMPLATE_FOLDER . "\" . BB_TEMPLATES[template]
-        if (!FileExist(templatePath)) {
-            BB_updateStatusAndLog("Warning: Template file not found: " . templatePath, true)
-        } else {
-            BB_updateStatusAndLog("Template file verified: " . templatePath)
-        }
-    }
-    
+    ; Try template matching for automine button with a restricted search area
     FoundX := -1
     FoundY := -1
     
-    ; Try each search area with each template
-    for areaIndex, area in searchAreas {
-        for templateIndex, template in templates {
-            templatePath := BB_TEMPLATE_FOLDER . "\" . BB_TEMPLATES[template]
-            if (!FileExist(templatePath)) {
-                continue  ; Skip if template doesn't exist
-            }
-            
-            ; Log search attempt
-            BB_updateStatusAndLog("Searching for " . template . " in area " . areaIndex . ": [" . 
-                area[1] . "," . area[2] . "," . area[3] . "," . area[4] . "]")
-                
-            if (BB_smartTemplateMatch(template, &FoundX, &FoundY, hwnd, area)) {
-                foundTemplate := template
-                BB_updateStatusAndLog("Found " . template . " in search area " . areaIndex . " at x=" . FoundX . ", y=" . FoundY)
-                break 2  ; Break both loops
-            }
-        }
-        
-        BB_updateStatusAndLog("No template found in search area " . areaIndex . ", expanding search")
-    }
+    ; Define search area specifically for the bottom left where automine button should be
+    searchArea := [
+        winX + 40,                   ; RESTRICT: Start at x=40 minimum
+        winY + (winH - 200),         ; Bottom area of the screen
+        winX + 150,                  ; Limited width
+        winY + winH                  ; Bottom of screen
+    ]
     
-    ; If template was found, click on it (NOT below it)
-    if (FoundX != -1 && FoundY != -1) {
-        ; Get template dimensions to click center of icon
-        templatePath := BB_TEMPLATE_FOLDER . "\" . BB_TEMPLATES[foundTemplate]
+    BB_updateStatusAndLog("Searching for automine button in area: " . 
+        Round(searchArea[1]) . "," . Round(searchArea[2]) . "," . Round(searchArea[3]) . "," . Round(searchArea[4]))
+    
+    ; Try template matching
+    if (BB_smartTemplateMatch("automine_button", &FoundX, &FoundY, hwnd, searchArea, 50)) {
+        BB_updateStatusAndLog("Found automine button at x=" . FoundX . ", y=" . FoundY)
         
-        ; Load the image to get dimensions
-        try {
-            image := LoadPicture(templatePath)
-            dimensions := GetPictureDimensions(image)
-            
-            ; Calculate center of the icon
-            iconWidth := dimensions.Width
-            iconHeight := dimensions.Height
-            
-            ; Center of the found template match
-            clickX := FoundX + (iconWidth / 2)
-            clickY := FoundY + (iconHeight / 2)
-            
-            ; Don't add arbitrary offsets that could miss the button
-            BB_clickAt(clickX, clickY)
-            BB_updateStatusAndLog("Clicked center of " . foundTemplate . " at x=" . clickX . ", y=" . clickY . " to disable automining")
-        } catch as err {
-            ; Fallback if we can't get image dimensions
-            BB_clickAt(FoundX + 35, FoundY + 30)  ; Approximate center of the icon
-            BB_updateStatusAndLog("Clicked approximate center of " . foundTemplate . " at x=" . (FoundX + 35) . ", y=" . (FoundY + 30))
+        ; Ensure X is at least 40
+        clickX := Max(winX + 40, FoundX + 25)  
+        clickY := FoundY + 25
+        
+        BB_updateStatusAndLog("Clicking automine at template match: x=" . clickX . ", y=" . clickY)
+        BB_clickAt(clickX, clickY)
+        Sleep(3000)
+        
+        ; Check if automining was disabled
+        if (!BB_checkAutofarming(hwnd)) {
+            BB_updateStatusAndLog("Automining disabled successfully with template match")
+            BB_isAutofarming := false
+            return true
         }
     } else {
-        ; Fallback to fixed coordinates if template matching fails - adjusted higher in window
-        BB_updateStatusAndLog("No template found in any search area, using fallback clicks", true)
-        
-        ; Try multiple fallback positions - spread out higher in the window
-        fallbackPositions := [
-            [winX + 60, winY + (winH/3.5)],      ; Moderate height
-            [winX + 60, winY + (winH/3.5) - 20], ; Slightly higher
-            [winX + 60, winY + (winH/3) + 20],   ; Slightly lower
-            [winX + 100, winY + (winH/3.2)],     ; More to the right
-            [winX + 30, winY + (winH/3.2)]       ; More to the left
-        ]
-        
-        for position in fallbackPositions {
-            BB_clickAt(position[1], position[2])
-            BB_updateStatusAndLog("Using fallback click position at x=" . position[1] . ", y=" . position[2])
-            
-            Sleep(1800)  ; Slightly longer wait between clicks (was 1500)
-            
-            ; Check if automining is disabled
-            if (!BB_isScreenStillMoving(hwnd, 2, 1000)) {
-                BB_updateStatusAndLog("Automining disabled successfully with fallback click")
-                BB_isAutofarming := false
-                return true
-            }
-        }
+        BB_updateStatusAndLog("No template match found for automine button, using fixed positions", true)
     }
     
-    ; Add helper function for getting picture dimensions
-    GetPictureDimensions(hBitmap) {
-        BITMAP := Buffer(24, 0)
-        DllCall("GetObject", "Ptr", hBitmap, "Int", 24, "Ptr", BITMAP)
-        return {Width: NumGet(BITMAP, 4, "Int"), Height: NumGet(BITMAP, 8, "Int")}
-    }
+    ; If template match failed or didn't work, use fixed positions 
     
-    Sleep(2000)  ; Allow time for mining effects to stop
+    ; First attempt - exact position from log success
+    clickX1 := Max(winX + 40, winX + 52)  ; Ensure at least x=40, use 52 from log
+    clickY1 := winY + 459
+    BB_updateStatusAndLog("Clicking automine at fixed primary position: x=" . clickX1 . ", y=" . clickY1)
+    BB_clickAt(clickX1, clickY1)
+    Sleep(3000)
     
-    maxAttempts := 3
-    attemptDelay := 1000
-    
-    ; Check if automining is disabled by checking for pixel movement
-    isStillMining := BB_isScreenStillMoving(hwnd, maxAttempts, attemptDelay)
-    
-    if (!isStillMining) {
-        BB_updateStatusAndLog("Automining disabled successfully")
+    ; Check if automining was disabled
+    if (!BB_checkAutofarming(hwnd)) {
+        BB_updateStatusAndLog("Automining disabled successfully with primary position")
         BB_isAutofarming := false
         return true
     }
     
-    ; If we're still mining after initial attempt, try again with fallback positions
-    BB_updateStatusAndLog("Still detecting mining activity, trying additional fallback positions", true)
+    ; Second attempt - try slightly to the right
+    clickX2 := winX + 70  
+    clickY2 := winY + 459
+    BB_updateStatusAndLog("Clicking automine at fixed secondary position: x=" . clickX2 . ", y=" . clickY2)
+    BB_clickAt(clickX2, clickY2)
+    Sleep(3000)
     
-    ; Try multiple fallback positions - higher and more varied
-    fallbackPositions := [
-        [winX + 60, winY + (winH/3.5)],        ; Main target area
-        [winX + 60, winY + (winH/3) - 30],      ; Slightly higher
-        [winX + 120, winY + (winH/3)],         ; To the right
-        [winX + 60, winY + (winH/4)],          ; Higher
-        [winX + 150, winY + (winH/3.2)]        ; Further right
-    ]
-    
-    for position in fallbackPositions {
-        BB_clickAt(position[1], position[2])
-        BB_updateStatusAndLog("Tried fallback position at x=" . position[1] . ", y=" . position[2])
-        
-        Sleep(2500)  ; Increased wait time (was 2000)
-        
-        ; Check if automining is disabled now
-        if (!BB_isScreenStillMoving(hwnd, maxAttempts, attemptDelay)) {
-            BB_updateStatusAndLog("Automining disabled successfully with fallback position " . A_Index)
-            BB_isAutofarming := false
-            return true
-        }
+    ; Check again
+    if (!BB_checkAutofarming(hwnd)) {
+        BB_updateStatusAndLog("Automining disabled successfully with secondary position")
+        BB_isAutofarming := false
+        return true
     }
     
-    ; If we get here, we failed to disable automining after all attempts
-    BB_updateStatusAndLog("Failed to disable automining after all attempts", true, true)
-    BB_FAILED_INTERACTION_COUNT++
+    ; Third attempt - further right
+    clickX3 := winX + 85
+    clickY3 := winY + 459
+    BB_updateStatusAndLog("Clicking automine at fixed tertiary position: x=" . clickX3 . ", y=" . clickY3)
+    BB_clickAt(clickX3, clickY3)
+    Sleep(3000)
     
-    if (BB_FAILED_INTERACTION_COUNT >= BB_MAX_FAILED_INTERACTIONS) {
-        BB_updateStatusAndLog("Too many failed attempts to disable automining, attempting game reset", true, true)
-        if !BB_resetGameState() {
-            BB_stopAutomation()
-            return false
-        }
+    ; Final check
+    if (!BB_checkAutofarming(hwnd)) {
+        BB_updateStatusAndLog("Automining disabled successfully with tertiary position")
+        BB_isAutofarming := false
+        return true
     }
     
+    ; If we get here, all attempts failed
+    BB_updateStatusAndLog("Failed to disable automining after all attempts", true)
     return false
 }
 
